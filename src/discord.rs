@@ -865,20 +865,25 @@ impl EventHandler for Handler {
                 )),
         ];
 
-        // Register global commands (works in DMs + all guilds after propagation).
+        // Register global commands only. Registering the same commands per-guild
+        // makes Discord show duplicate slash commands in guild command pickers.
         if let Err(e) = Command::set_global_commands(&ctx.http, commands.clone()).await {
             tracing::warn!(error = %e, "failed to register global slash commands");
         } else {
             info!("registered global slash commands");
         }
 
-        // Also register per-guild for instant availability (global can take up to 1h).
+        // One-time migration cleanup: older versions registered the same
+        // slash commands per-guild, and Discord persists those server-side.
+        // Keep guild command sets empty so only global commands are shown.
         for guild in &ready.guilds {
             let guild_id = guild.id;
-            if let Err(e) = guild_id.set_commands(&ctx.http, commands.clone()).await {
-                tracing::warn!(%guild_id, error = %e, "failed to register guild slash commands");
-            } else {
-                info!(%guild_id, "registered guild slash commands");
+            if let Err(e) = guild_id.set_commands(&ctx.http, Vec::new()).await {
+                tracing::warn!(
+                    %guild_id,
+                    error = %e,
+                    "failed to clear stale guild slash commands"
+                );
             }
         }
 

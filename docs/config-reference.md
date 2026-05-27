@@ -176,6 +176,53 @@ Session pool settings for managing concurrent agent sessions.
 
 ---
 
+## `[hooks]`
+
+Lifecycle hooks that run custom scripts at specific points during the container lifecycle. See [hooks.md](hooks.md) for full documentation and examples.
+
+### `[hooks.pre_boot]`
+
+Runs **before** agent pool creation. Use for bootstrapping files, syncing from S3, installing CLIs.
+
+### `[hooks.pre_shutdown]`
+
+Runs **after** pool shutdown on SIGTERM. Use for backing up state, syncing to S3.
+
+Both hooks share the same fields:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `script` | string | — | Absolute path to an executable script. |
+| `inline` | string | — | Script content (written to temp file and executed). |
+| `url` | string | — | Remote script URL (max 1 MiB). |
+| `sha256` | string | — | Required with `url` — hex-encoded SHA-256 checksum. |
+| `timeout_seconds` | u64 | `60` | Max wall-clock seconds before the script is killed. |
+| `on_failure` | string | `"abort"` | `"abort"` exits openab; `"warn"` logs and continues. |
+
+> Exactly one of `script`, `inline`, or `url` must be set. `script` must be an absolute path. `url` requires `sha256`.
+
+```toml
+[hooks.pre_boot]
+inline = '''
+#!/bin/sh
+set -e
+aws s3 sync "$BOOTSTRAP_URI" "$HOME/"
+'''
+timeout_seconds = 120
+on_failure = "abort"
+
+[hooks.pre_shutdown]
+inline = '''
+#!/bin/sh
+aws s3 sync "$HOME/" "s3://$STATE_BUCKET/$TASK_FAMILY/" \
+  --exclude "aws-cli/*" --quiet
+'''
+timeout_seconds = 30
+on_failure = "warn"
+```
+
+---
+
 ## `[reactions]`
 
 Emoji reaction feedback on messages to show agent processing status.

@@ -43,8 +43,9 @@ At this point you are **inside the sandbox** (prompt changes). To return to the 
 
 ```bash
 # 3. (Inside sandbox) Download and install OAB
-sandbox$ curl -LO https://github.com/openabdev/openab/releases/latest/download/openab-linux-x64.tar.gz
-sandbox$ tar xzf openab-linux-x64.tar.gz
+sandbox$ TAG=$(curl -sI https://github.com/openabdev/openab/releases/latest | grep -i location | sed 's|.*/||' | tr -d '\r')
+sandbox$ curl -LO "https://github.com/openabdev/openab/releases/download/${TAG}/${TAG}-linux-x64.tar.gz"
+sandbox$ tar xzf ${TAG}-linux-x64.tar.gz
 sandbox$ chmod +x openab
 
 # 4. (Inside sandbox) Create config.toml
@@ -124,7 +125,8 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 # Download pre-built OAB binary
-RUN curl -L https://github.com/openabdev/openab/releases/latest/download/openab-linux-x64.tar.gz | \
+ARG OAB_VERSION=openab-0.8.4-beta.10
+RUN curl -L "https://github.com/openabdev/openab/releases/download/${OAB_VERSION}/${OAB_VERSION}-linux-x64.tar.gz" | \
     tar xz -C /usr/local/bin/
 
 USER sandbox

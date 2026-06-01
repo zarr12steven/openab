@@ -2,7 +2,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tokio::process::Command;
@@ -44,12 +46,17 @@ struct StoredSession {
     conversation_id: Option<String>,
     #[serde(default)]
     prev_line_count: usize,
+    /// Hash of the last line at prev_line_count boundary; detects same-length rewrites.
+    #[serde(default)]
+    prev_last_line_hash: u64,
 }
 
 struct Session {
     conversation_id: Option<String>,
     /// Number of lines already delivered to the caller; used for delta extraction.
     prev_line_count: usize,
+    /// Hash of the last line at prev_line_count boundary.
+    prev_last_line_hash: u64,
 }
 
 struct Adapter {
@@ -103,18 +110,18 @@ impl Adapter {
         self.load_store_inner()
     }
 
-    /// Try to restore conversation_id and prev_line_count from persisted state.
-    fn restore_session(&self, session_id: &str) -> Option<(String, usize)> {
+    /// Try to restore conversation_id, prev_line_count, and prev_last_line_hash from persisted state.
+    fn restore_session(&self, session_id: &str) -> Option<(String, usize, u64)> {
         let store = self.load_store();
         store.sessions.get(session_id).and_then(|s| {
             s.conversation_id
                 .clone()
-                .map(|cid| (cid, s.prev_line_count))
+                .map(|cid| (cid, s.prev_line_count, s.prev_last_line_hash))
         })
     }
 
     /// Persist a session binding (read-modify-write under single lock).
-    fn persist_session(&self, session_id: &str, conversation_id: Option<&str>, prev_line_count: usize) {
+    fn persist_session(&self, session_id: &str, conversation_id: Option<&str>, prev_line_count: usize, prev_last_line_hash: u64) {
         let Some(_lock) = self.lock_state_file() else {
             return;
         };
@@ -124,6 +131,7 @@ impl Adapter {
             StoredSession {
                 conversation_id: conversation_id.map(String::from),
                 prev_line_count,
+                prev_last_line_hash,
             },
         );
         let tmp = self.state_file.with_extension("tmp");
@@ -167,21 +175,51 @@ impl Adapter {
         Some(created.remove(0).clone())
     }
 
-    fn extract_delta(full_text: &str, prev_line_count: usize, conversation_bound: bool) -> (String, usize) {
+    fn line_hash(line: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        line.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn extract_delta(full_text: &str, prev_line_count: usize, prev_last_line_hash: u64, conversation_bound: bool) -> (String, usize, u64) {
         let lines: Vec<&str> = full_text.lines().collect();
         let total = lines.len();
+        let last_hash = lines.last().map(|l| Self::line_hash(l)).unwrap_or(0);
         if !conversation_bound || prev_line_count == 0 {
-            return (full_text.to_string(), total);
+            return (full_text.to_string(), total, last_hash);
         }
         if total < prev_line_count {
             eprintln!(
                 "[agy-acp] WARN: agy stdout has fewer lines than expected ({total} < {prev_line_count}); \
                  sending full output and resetting delta baseline"
             );
-            return (full_text.to_string(), total);
+            return (full_text.to_string(), total, last_hash);
+        }
+        // Verify the boundary line hash to detect same-length rewrites
+        if total == prev_line_count {
+            if prev_last_line_hash != 0 && last_hash != prev_last_line_hash {
+                eprintln!(
+                    "[agy-acp] WARN: agy stdout has same line count but different content; \
+                     sending full output"
+                );
+                return (full_text.to_string(), total, last_hash);
+            }
+            // Same count, same hash — genuinely no new content
+            return (String::new(), total, last_hash);
+        }
+        // Verify that the line at prev boundary still matches
+        if prev_line_count > 0 && prev_last_line_hash != 0 {
+            let boundary_hash = Self::line_hash(lines[prev_line_count - 1]);
+            if boundary_hash != prev_last_line_hash {
+                eprintln!(
+                    "[agy-acp] WARN: agy stdout content changed at boundary; \
+                     sending full output and resetting delta baseline"
+                );
+                return (full_text.to_string(), total, last_hash);
+            }
         }
         let delta = lines[prev_line_count..].join("\n");
-        (delta, total)
+        (delta, total, last_hash)
     }
 
     fn evict_if_needed(&mut self) {
@@ -194,7 +232,7 @@ impl Adapter {
     }
 
     fn restore_session_state(&mut self, session_id: &str) -> bool {
-        let Some((conversation_id, prev_line_count)) = self.restore_session(session_id) else {
+        let Some((conversation_id, prev_line_count, prev_last_line_hash)) = self.restore_session(session_id) else {
             return false;
         };
         // Evict only after confirming the restore target exists
@@ -206,6 +244,7 @@ impl Adapter {
             Session {
                 conversation_id: Some(conversation_id),
                 prev_line_count,
+                prev_last_line_hash,
             },
         );
         true
@@ -233,6 +272,7 @@ impl Adapter {
             Session {
                 conversation_id,
                 prev_line_count: 0,
+                prev_last_line_hash: 0,
             },
         );
         JsonRpcResponse {
@@ -374,12 +414,17 @@ impl Adapter {
                     .get(session_id)
                     .map(|s| s.prev_line_count)
                     .unwrap_or(0);
+                let prev_last_line_hash = self
+                    .sessions
+                    .get(session_id)
+                    .map(|s| s.prev_last_line_hash)
+                    .unwrap_or(0);
                 let conversation_bound = self
                     .sessions
                     .get(session_id)
                     .map(|s| s.conversation_id.is_some())
                     .unwrap_or(false);
-                let (new_text, total_lines) = Self::extract_delta(&full_text, prev_line_count, conversation_bound);
+                let (new_text, total_lines, last_hash) = Self::extract_delta(&full_text, prev_line_count, prev_last_line_hash, conversation_bound);
 
                 // Bind conversation from snapshot diff
                 let conv_id = snapshot
@@ -394,9 +439,11 @@ impl Adapter {
                     }
                     if session.conversation_id.is_some() {
                         session.prev_line_count = total_lines;
+                        session.prev_last_line_hash = last_hash;
                         should_persist = true;
                     } else {
                         session.prev_line_count = 0;
+                        session.prev_last_line_hash = 0;
                         eprintln!(
                             "[agy-acp] WARN: could not bind conversation ID; \
                              running in single-turn mode"
@@ -406,7 +453,7 @@ impl Adapter {
                 }
                 if should_persist {
                     let cid = self.sessions.get(session_id).and_then(|s| s.conversation_id.clone());
-                    self.persist_session(session_id, cid.as_deref(), total_lines);
+                    self.persist_session(session_id, cid.as_deref(), total_lines, last_hash);
                 }
 
                 let notification = serde_json::to_string(&JsonRpcNotification {
@@ -527,31 +574,56 @@ mod tests {
 
     #[test]
     fn test_extract_delta_returns_full_text_when_unbound() {
-        let (result, count) = Adapter::extract_delta("old\nnew", 1, false);
+        let (result, count, _hash) = Adapter::extract_delta("old\nnew", 1, 0, false);
         assert_eq!(result, "old\nnew");
         assert_eq!(count, 2);
     }
 
     #[test]
     fn test_extract_delta_skips_previous_lines_when_bound() {
-        let (result, count) =
-            Adapter::extract_delta("first response\nsecond response", 1, true);
+        let (result, count, _hash) =
+            Adapter::extract_delta("first response\nsecond response", 1, 0, true);
         assert_eq!(result, "second response");
         assert_eq!(count, 2);
     }
 
     #[test]
     fn test_extract_delta_returns_full_when_fewer_lines_than_expected() {
-        let (result, count) = Adapter::extract_delta("short", 5, true);
+        let (result, count, _hash) = Adapter::extract_delta("short", 5, 0, true);
         assert_eq!(result, "short");
         assert_eq!(count, 1);
     }
 
     #[test]
     fn test_extract_delta_preserves_indentation() {
-        let (result, count) = Adapter::extract_delta("hello\n  indented code", 1, true);
+        let (result, count, _hash) = Adapter::extract_delta("hello\n  indented code", 1, 0, true);
         assert_eq!(result, "  indented code");
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_extract_delta_detects_same_length_rewrite() {
+        let original = "line one\nline two";
+        let (_result, _count, hash) = Adapter::extract_delta(original, 0, 0, false);
+        // Now simulate same line count but different content
+        let rewritten = "line one\nline CHANGED";
+        let (result, count, _new_hash) = Adapter::extract_delta(rewritten, 2, hash, true);
+        // Should detect mismatch and send full output
+        assert_eq!(result, rewritten);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_extract_delta_boundary_hash_mismatch_sends_full() {
+        let original = "aaa\nbbb\nccc";
+        // Simulate: prev_line_count=2, hash of line "bbb" (the boundary)
+        let boundary_hash = Adapter::line_hash("bbb");
+        // Now content changed at boundary
+        let modified = "aaa\nXXX\nccc\nnew line";
+        let (result, count, _hash) = Adapter::extract_delta(modified, 2, boundary_hash, true);
+        // Should detect boundary mismatch and send full
+        assert_eq!(result, modified);
+        assert_eq!(count, 4);
     }
 
     #[test]
@@ -581,7 +653,7 @@ mod tests {
             conversations_dir: root.join("conversations"),
             state_file: root.join("sessions.json"),
         };
-        adapter.persist_session("sess-1", Some("conv-abc"), 10);
+        adapter.persist_session("sess-1", Some("conv-abc"), 10, 12345);
 
         let response = adapter.handle_session_load(7, &json!({"sessionId": "sess-1"}));
         assert!(response.error.is_none());
@@ -598,6 +670,13 @@ mod tests {
                 .get("sess-1")
                 .map(|s| s.prev_line_count),
             Some(10)
+        );
+        assert_eq!(
+            adapter
+                .sessions
+                .get("sess-1")
+                .map(|s| s.prev_last_line_hash),
+            Some(12345)
         );
 
         let _ = fs::remove_dir_all(root);
@@ -690,9 +769,9 @@ mod tests {
             state_file: root.join("sessions.json"),
         };
 
-        adapter.persist_session("sess-1", Some("conv-abc"), 7);
+        adapter.persist_session("sess-1", Some("conv-abc"), 7, 99999);
         let restored = adapter.restore_session("sess-1");
-        assert_eq!(restored, Some(("conv-abc".to_string(), 7)));
+        assert_eq!(restored, Some(("conv-abc".to_string(), 7, 99999)));
 
         let missing = adapter.restore_session("sess-unknown");
         assert_eq!(missing, None);

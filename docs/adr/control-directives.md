@@ -83,7 +83,12 @@ The directive parser runs **before** the message enters the agent pipeline. It o
 - Resolves `~` to the bot's home directory
 - Loads `AGENTS.md`, `.kiro/steering/`, and skill definitions from the target path
 - If the path does not exist, session starts with default context (no error surfaced to user; logged at warn level)
-- Path must be absolute or start with `~`; relative paths are rejected
+- **Security boundary:** bot home subtree only. Enforcement:
+  1. Path must be absolute or start with `~` (relative paths rejected)
+  2. Resolve `~` → bot home, then `canonicalize()` (resolves symlinks, `..`, `.`)
+  3. Final canonical path MUST be a descendant of bot home directory
+  4. Symlinks that escape bot home are rejected after canonicalization
+  5. Violation → session fails with user-visible error, not silent fallback
 
 ### 3.2 `[[title:...]]` — Thread Title
 
@@ -94,7 +99,7 @@ The directive parser runs **before** the message enters the agent pipeline. It o
 ### 3.3 `[[model:...]]` — Model Selection
 
 - Value must match a configured model identifier
-- If the model is unavailable or unknown, the session falls back to the default model and logs a warning
+- If the model is unavailable or unknown, the session **fails with a user-visible error** — never silently falls back to default. Rationale: silent fallback can route an entire conversation through the wrong model without the user noticing
 - Does not persist beyond the session
 
 ---
@@ -135,9 +140,13 @@ Shared syntax reduces cognitive load. The direction is unambiguous from context 
 
 ### 4.4 Security Considerations
 
-- `[[ws:...]]` paths should be validated against an allowlist or restricted to the bot's home subtree to prevent directory traversal
-- `[[model:...]]` only selects from pre-configured models; cannot inject arbitrary API endpoints
+- `[[ws:...]]` enforces bot home subtree only — canonicalize, reject symlink escapes (see §3.1)
+- `[[model:...]]` only selects from pre-configured models; cannot inject arbitrary API endpoints; unknown model = hard fail
 - Directive values are sanitized (no newlines, no control characters beyond the value delimiter)
+
+### 4.5 No Mid-Session Reset
+
+Control directives are immutable once the session starts. There is no mechanism to change `ws`, `title`, or `model` mid-conversation. To change parameters, start a new session. This eliminates state mutation complexity and keeps the session contract predictable.
 
 ---
 
@@ -147,10 +156,12 @@ These are **not** in scope for Phase 1 but the design accommodates them:
 
 | Directive | Purpose |
 |-----------|---------|
-| `[[repo:owner/repo]]` | Bind GitHub repository context |
+| `[[repo:owner/repo]]` | Bind GitHub repository context (Phase 1 relies on `[[ws:...]]` steering to define repo context) |
 | `[[timeout:300]]` | Session timeout in seconds |
 | `[[skill:review]]` | Activate a specific skill set |
 | `[[label:bug]]` | Tag the session/thread with labels (multi-value: array semantics) |
+
+**Why `[[repo:...]]` is not in Phase 1:** Workspace steering files already define repository context (remote URL, branch conventions, etc.). A standalone `[[repo:...]]` directive would need to specify what "binding" means (clone? set remote? just metadata?) — that design is deferred until usage patterns emerge from `[[ws:...]]` adoption.
 
 For multi-value keys (e.g., `[[label:a]] [[label:b]]`), a future revision may introduce array semantics where repeated keys accumulate rather than overwrite. Phase 1 uses last-wins for all keys.
 
@@ -192,9 +203,10 @@ investigate the build failure
 - Naturally implies "session start" — aligns with first-message-only rule
 
 **Relationship to inline directives:**
-- `/new` is a convenience layer; control directives remain the canonical spec
+- `/new` is **transport sugar only** — it MUST NOT introduce semantics beyond what `[[key:value]]` provides
 - Users who prefer text-only (or are on platforms without slash commands) use `@Bot [[...]]` directly
 - Both paths produce identical `SessionMetadata`
+- `/new` and inline `[[...]]` cannot co-exist in the same message (a `/new` invocation IS the session's first message; there is no separate text body to embed inline directives)
 
 ---
 

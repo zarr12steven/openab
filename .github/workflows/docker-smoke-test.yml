@@ -15,9 +15,10 @@ jobs:
 
       - name: Build openab binary (once)
         run: |
+          mkdir -p .binaries
           DOCKER_BUILDKIT=1 docker build --target builder -t openab-builder -f Dockerfile .
           CID=$(docker create openab-builder)
-          docker cp "$CID:/build/target/release/openab" openab
+          docker cp "$CID:/build/target/release/openab" .binaries/openab
           docker rm "$CID"
 
       - name: Build agy-acp adapter (for Dockerfile.antigravity)
@@ -25,7 +26,7 @@ jobs:
           if [ -f Dockerfile.antigravity ]; then
             DOCKER_BUILDKIT=1 docker build --target adapter-builder -t agy-acp-builder -f Dockerfile.antigravity .
             CID=$(docker create agy-acp-builder)
-            docker cp "$CID:/build/target/release/agy-acp" agy-acp
+            docker cp "$CID:/build/target/release/agy-acp" .binaries/agy-acp
             docker rm "$CID"
           fi
 
@@ -33,9 +34,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openab-binary
-          path: |
-            openab
-            agy-acp
+          path: .binaries/
           retention-days: 1
 
   smoke-test:

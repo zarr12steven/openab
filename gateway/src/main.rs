@@ -33,6 +33,11 @@ pub const REPLY_TOKEN_TTL_SECS: u64 = 50;
 /// if webhooks arrive faster than OAB can reply (e.g. OAB offline, spam burst).
 pub const REPLY_TOKEN_CACHE_MAX: usize = 10_000;
 
+/// Cache of recently seen LINE webhook identities to suppress redelivery duplicates.
+pub type LineDedupeCache = Arc<std::sync::Mutex<HashMap<String, Instant>>>;
+pub const LINE_DEDUPE_TTL_SECS: u64 = 600;
+pub const LINE_DEDUPE_MAX: usize = 10_000;
+
 // --- App state (shared across all adapters) ---
 
 pub struct AppState {
@@ -62,6 +67,10 @@ pub struct AppState {
     /// the first client to `remove()` a token wins the free Reply API call;
     /// other clients for the same event naturally fall back to Push API.
     pub reply_token_cache: ReplyTokenCache,
+    /// Cache of recently seen LINE webhook identities (prefer webhookEventId,
+    /// fallback to LINE message id) to suppress redelivery duplicates before
+    /// they reach Core.
+    pub line_dedupe_cache: LineDedupeCache,
     /// Shared HTTP client for media downloads and API calls
     pub client: reqwest::Client,
 }
@@ -220,6 +229,7 @@ async fn main() -> Result<()> {
 
     let (event_tx, _) = broadcast::channel::<String>(256);
     let reply_token_cache: ReplyTokenCache = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let line_dedupe_cache: LineDedupeCache = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
@@ -366,6 +376,7 @@ async fn main() -> Result<()> {
         ws_token,
         event_tx,
         reply_token_cache,
+        line_dedupe_cache,
         client,
     });
 

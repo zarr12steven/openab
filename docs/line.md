@@ -83,7 +83,11 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 
 - **1:1 chat** — send a message to the bot, get an AI agent response
 - **Group chat** — add the bot to a group, it responds to all messages
+- **Inbound images** — user-sent LINE images are downloaded through the LINE Content API and forwarded to OpenAB as image attachments
 - **Webhook signature validation** — HMAC-SHA256 via `LINE_CHANNEL_SECRET`
+
+> **Implementation tradeoff:** Inbound image handling is currently synchronous in the webhook path. That keeps reply-token caching and event delivery semantics straightforward, but image download/processing time also counts against LINE's one-shot Reply API window and can increase the chance of webhook redelivery under slow image processing.
+> OpenAB mitigates the most obvious duplicate-turn risk by deduping recent LINE webhook identities before image download and event emission.
 
 ### Not Supported (LINE API limitations)
 
@@ -91,6 +95,7 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 - **Reactions** — LINE Bot API does not support message reactions.
 - **@mention gating** — LINE does not expose mention entities. In groups, the bot responds to all messages. To limit this, use a dedicated group for the bot.
 - **Markdown rendering** — LINE uses its own text formatting. Agent replies are sent as plain text.
+- **External-content images** — LINE image messages backed by `contentProvider.type = "external"` are not downloaded yet.
 
 ## Environment Variables
 

@@ -8,12 +8,12 @@ use tracing::{error, info, warn};
 
 // --- LINE types ---
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LineWebhookBody {
     events: Vec<LineEvent>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LineEvent {
     #[serde(rename = "type")]
     event_type: String,
@@ -23,7 +23,7 @@ struct LineEvent {
     reply_token: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LineSource {
     #[serde(rename = "type")]
     source_type: String,
@@ -35,7 +35,7 @@ struct LineSource {
     room_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LineMessage {
     id: String,
     #[serde(rename = "type")]
@@ -45,7 +45,7 @@ struct LineMessage {
     content_provider: Option<LineContentProvider>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LineContentProvider {
     #[serde(rename = "type")]
     provider_type: String,
@@ -217,16 +217,17 @@ async fn build_gateway_event_from_line_event(
         }
     }
 
-    // Never silently drop an inbound image event after we parsed the webhook.
-    // If attachment extraction fails (missing token, unsupported external image,
-    // download failure, resize failure, etc.), emit a minimal marker so Core still
-    // sees that the user sent an image.
-    let event_text =
-        if msg.message_type == "image" && text.trim().is_empty() && attachments.is_empty() {
-            "[LINE image]"
-        } else {
-            text
-        };
+    // Do not synthesize placeholder text for failed/unsupported image downloads.
+    // Core treats content.text as the user's prompt, so a fake marker would create
+    // a misleading turn instead of preserving the actual image content.
+    let event_text = text;
+
+    if msg.message_type == "image" && event_text.trim().is_empty() && attachments.is_empty() {
+        info!(
+            message_id = %msg.id,
+            "LINE image event produced no attachment; skipping without synthesizing placeholder text"
+        );
+    }
 
     if event_text.trim().is_empty() && attachments.is_empty() {
         return None;
@@ -321,13 +322,18 @@ pub async fn download_line_image(
         }
     }
 
-    let bytes = resp.bytes().await.ok()?;
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!(message_id, error = %e, "LINE image download failed while reading body");
+            return None;
+        }
+    };
     if bytes.len() as u64 > IMAGE_MAX_DOWNLOAD {
         warn!(message_id, size = bytes.len(), "LINE image exceeds limit");
         return None;
     }
 
-    let bytes = bytes.to_vec();
     let (compressed, mime) =
         match tokio::task::spawn_blocking(move || resize_and_compress(&bytes)).await {
             Ok(Ok(v)) => v,
@@ -554,7 +560,7 @@ mod tests {
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "image/png")
                     .insert_header("content-length", (IMAGE_MAX_DOWNLOAD + 1).to_string())
-                    .set_body_bytes(vec![0u8; 16]),
+                    .set_body_bytes(vec![0u8; IMAGE_MAX_DOWNLOAD as usize + 1]),
             )
             .mount_as_scoped(&server)
             .await;

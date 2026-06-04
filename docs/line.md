@@ -87,6 +87,7 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 - **Webhook signature validation** — HMAC-SHA256 via `LINE_CHANNEL_SECRET`
 
 > **Implementation tradeoff:** OpenAB now acknowledges LINE webhooks before image download/processing so slow attachment work is less likely to trigger webhook redelivery. The follow-up image download and event emission happen asynchronously, which keeps the request path short but also means a crash after the HTTP 200 can still lose that in-flight work. This PR intentionally keeps scope small and does not add a separate background-task durability or duplicate-suppression layer on top of early-ack.
+> If a LINE-hosted image cannot be downloaded or decoded, OpenAB logs and skips that image event rather than synthesizing a fake text prompt.
 
 ### Not Supported (LINE API limitations)
 
@@ -101,7 +102,7 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 | Variable | Required | Description |
 |---|---|---|
 | `LINE_CHANNEL_SECRET` | Yes | Channel secret for webhook signature validation |
-| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | Channel access token for Push Message API |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | Channel access token for Reply/Push Message API and LINE-hosted image downloads |
 
 ## Troubleshooting
 

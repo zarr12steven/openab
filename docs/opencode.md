@@ -51,9 +51,8 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-# command = "opencode"  # optional — defaults from OPENAB_AGENT_COMMAND
-args = ["acp"]
-# working_dir = "/home/node"  # optional — defaults to $HOME
+# command and args default from OPENAB_AGENT_COMMAND="opencode acp"
+# Only override if you need non-default behavior
 ```
 
 ## Authentication

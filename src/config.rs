@@ -354,18 +354,35 @@ fn default_gateway_platform() -> String {
     "telegram".into()
 }
 
+/// Raw intermediate struct for serde — uses `Option` to detect explicit fields.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+struct AgentConfigRaw {
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    working_dir: String,
+    env: HashMap<String, String>,
+    inherit_env: Vec<String>,
+}
+
+impl Default for AgentConfigRaw {
+    fn default() -> Self {
+        Self {
+            command: None,
+            args: None,
+            working_dir: default_working_dir(),
+            env: HashMap::new(),
+            inherit_env: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct AgentConfig {
-    #[serde(default = "default_agent_command")]
     pub command: String,
-    #[serde(default)]
     pub args: Vec<String>,
-    #[serde(default = "default_working_dir")]
     pub working_dir: String,
-    #[serde(default)]
     pub env: HashMap<String, String>,
-    #[serde(default)]
     pub inherit_env: Vec<String>,
 }
 
@@ -373,11 +390,36 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             command: default_agent_command(),
-            args: Vec::new(),
+            args: default_agent_args(),
             working_dir: default_working_dir(),
             env: HashMap::new(),
             inherit_env: Vec::new(),
         }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AgentConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = AgentConfigRaw::deserialize(deserializer)?;
+        let cmd_explicit = raw.command.is_some();
+        let command = raw.command.unwrap_or_else(default_agent_command);
+        // If command was explicitly set but args was not, default args to []
+        // to avoid leaking env-var args into a custom command.
+        let args = match (cmd_explicit, raw.args) {
+            (_, Some(args)) => args,           // args explicitly set → use them
+            (true, None) => Vec::new(),        // command set, args omitted → empty
+            (false, None) => default_agent_args(), // neither set → env var
+        };
+        Ok(AgentConfig {
+            command,
+            args,
+            working_dir: raw.working_dir,
+            env: raw.env,
+            inherit_env: raw.inherit_env,
+        })
     }
 }
 
@@ -533,7 +575,21 @@ fn default_working_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
 fn default_agent_command() -> String {
-    std::env::var("OPENAB_AGENT_COMMAND").unwrap_or_else(|_| "openab-agent".into())
+    if let Ok(val) = std::env::var("OPENAB_AGENT_COMMAND") {
+        if let Some(cmd) = val.split_whitespace().next() {
+            return cmd.to_string();
+        }
+    }
+    "openab-agent".into()
+}
+fn default_agent_args() -> Vec<String> {
+    if let Ok(val) = std::env::var("OPENAB_AGENT_COMMAND") {
+        let parts: Vec<&str> = val.split_whitespace().collect();
+        if parts.len() > 1 {
+            return parts[1..].iter().map(|s| s.to_string()).collect();
+        }
+    }
+    Vec::new()
 }
 fn default_max_sessions() -> usize {
     10

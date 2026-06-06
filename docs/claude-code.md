@@ -28,9 +28,8 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-# command = "claude-agent-acp"  # optional — defaults from OPENAB_AGENT_COMMAND
-args = []
-# working_dir = "/home/node"  # optional — defaults to $HOME
+# command defaults from OPENAB_AGENT_COMMAND="claude"
+# Only override if you need non-default behavior
 ```
 
 ## Authentication

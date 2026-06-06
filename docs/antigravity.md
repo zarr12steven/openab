@@ -18,9 +18,8 @@ openab ──ACP JSON-RPC──► agy-acp ──spawns──► agy --add-dir /
 
 ```toml
 [agent]
-# command = "agy-acp"  # optional — defaults from OPENAB_AGENT_COMMAND
-args = []
-# working_dir = "/home/agent"  # optional — defaults to $HOME
+# command defaults from OPENAB_AGENT_COMMAND="agy-acp"
+# Only override if you need non-default behavior
 ```
 
 ### Environment Variables

@@ -31,9 +31,9 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-# command = "grok"  # optional — defaults from OPENAB_AGENT_COMMAND
-args = ["agent", "stdio"]
-# working_dir = "/home/agent"  # optional — defaults to $HOME
+# command and args default from OPENAB_AGENT_COMMAND="grok agent stdio"
+# Only override if you need non-default behavior:
+# args = ["agent", "stdio", "--model", "grok-4.3"]
 ```
 
 ## Authentication
@@ -96,9 +96,8 @@ The default model is whichever Grok Build CLI selects (currently `grok-code-fast
 
 ```toml
 [agent]
-# command = "grok"  # optional — defaults from OPENAB_AGENT_COMMAND
+# Override args to select a specific model (command defaults from OPENAB_AGENT_COMMAND)
 args = ["agent", "stdio", "--model", "grok-4.3"]
-# working_dir = "/home/agent"  # optional — defaults to $HOME
 ```
 
 List available models inside the pod:

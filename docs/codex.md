@@ -32,15 +32,15 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-command = "codex-acp"
+# command = "codex-acp"  # optional — defaults from OPENAB_AGENT_COMMAND
 args = []
-working_dir = "/home/node"
+# working_dir = "/home/node"  # optional — defaults to $HOME
 ```
 
 ## Authentication
 
 ```bash
-kubectl exec -it deployment/openab-codex -- codex login --device-auth
+kubectl exec -it deployment/openab-codex -- sh -c "$OPENAB_AGENT_AUTH_COMMAND"
 ```
 
 Follow the device code flow in your browser, then restart the pod:
@@ -148,9 +148,9 @@ itself, explicitly expose an upload token to the agent:
 
 ```toml
 [agent]
-command = "codex-acp"
+# command = "codex-acp"  # optional — defaults from OPENAB_AGENT_COMMAND
 args = []
-working_dir = "/home/node"
+# working_dir = "/home/node"  # optional — defaults to $HOME
 env = { DISCORD_FILE_BOT_TOKEN = "${DISCORD_FILE_BOT_TOKEN}" }
 ```
 

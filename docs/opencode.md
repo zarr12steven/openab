@@ -51,15 +51,15 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-command = "opencode"
+# command = "opencode"  # optional — defaults from OPENAB_AGENT_COMMAND
 args = ["acp"]
-working_dir = "/home/node"
+# working_dir = "/home/node"  # optional — defaults to $HOME
 ```
 
 ## Authentication
 
 ```bash
-kubectl exec -it deployment/openab-opencode -- opencode auth login
+kubectl exec -it deployment/openab-opencode -- sh -c "$OPENAB_AGENT_AUTH_COMMAND"
 ```
 
 Follow the browser OAuth flow, then restart the pod:

@@ -47,8 +47,8 @@ Pi saves session history as trees, enabling clean branching of code exploration.
 
 ```toml
 [agent]
-command = "pi-acp"
-working_dir = "/home/node"
+# command = "pi-acp"  # optional — defaults from OPENAB_AGENT_COMMAND
+# working_dir = "/home/node"  # optional — defaults to $HOME
 ```
 
 ## Docker

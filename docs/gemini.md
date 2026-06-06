@@ -32,9 +32,9 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-command = "gemini"
+# command = "gemini"  # optional — defaults from OPENAB_AGENT_COMMAND
 args = ["--acp"]
-working_dir = "/home/node"
+# working_dir = "/home/node"  # optional — defaults to $HOME
 env = { GEMINI_API_KEY = "${GEMINI_API_KEY}" }
 ```
 

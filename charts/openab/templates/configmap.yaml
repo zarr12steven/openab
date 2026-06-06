@@ -137,9 +137,13 @@ data:
     {{- end }}
 
     [agent]
+    {{- if $cfg.command }}
     command = {{ $cfg.command | toJson }}
+    {{- end }}
     args = {{ if $cfg.args }}{{ $cfg.args | toJson }}{{ else }}[]{{ end }}
-    working_dir = {{ $cfg.workingDir | default "/home/agent" | toJson }}
+    {{- if $cfg.workingDir }}
+    working_dir = {{ $cfg.workingDir | toJson }}
+    {{- end }}
     {{- if $cfg.env }}
     env = { {{ $first := true }}{{ range $k, $v := $cfg.env }}{{ if not $first }}, {{ end }}{{ $k }} = {{ $v | toJson }}{{ $first = false }}{{ end }} }
     {{- end }}

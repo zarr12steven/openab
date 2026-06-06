@@ -25,9 +25,8 @@ helm install openab openab/openab \
 
 ```toml
 [agent]
-# command = "kiro-cli"  # optional — defaults from OPENAB_AGENT_COMMAND
-args = ["acp", "--trust-all-tools"]
-# working_dir = "/home/agent"  # optional — defaults to $HOME
+# command and args default from OPENAB_AGENT_COMMAND="kiro-cli acp --trust-all-tools"
+# Only override if you need non-default behavior
 ```
 
 ## Authentication

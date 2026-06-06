@@ -533,16 +533,16 @@ fn default_working_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
 fn default_agent_command() -> String {
-    if let Ok(exec) = std::env::var("OPENAB_AGENT_EXEC") {
-        if let Some(cmd) = exec.split_whitespace().next() {
+    if let Ok(val) = std::env::var("OPENAB_AGENT_COMMAND") {
+        if let Some(cmd) = val.split_whitespace().next() {
             return cmd.to_string();
         }
     }
-    std::env::var("OPENAB_AGENT_COMMAND").unwrap_or_else(|_| "openab-agent".into())
+    "openab-agent".into()
 }
 fn default_agent_args() -> Vec<String> {
-    if let Ok(exec) = std::env::var("OPENAB_AGENT_EXEC") {
-        let parts: Vec<&str> = exec.split_whitespace().collect();
+    if let Ok(val) = std::env::var("OPENAB_AGENT_COMMAND") {
+        let parts: Vec<&str> = val.split_whitespace().collect();
         if parts.len() > 1 {
             return parts[1..].iter().map(|s| s.to_string()).collect();
         }

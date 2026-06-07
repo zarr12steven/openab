@@ -193,20 +193,22 @@ impl SessionPool {
             }
         }
 
-        // Resolve effective working directory: explicit override > stored per-session > global config.
-        let effective_workdir: String = if let Some(wd) = working_dir_override {
-            wd.to_string()
-        } else {
+        // Resolve effective working directory: stored per-session > explicit override > global config.
+        // Stored value has highest priority to enforce immutability (ADR §4.5).
+        let stored_workdir = {
             let state = self.state.read().await;
-            state
-                .session_workdirs
-                .get(thread_id)
-                .cloned()
-                .unwrap_or_else(|| self.config.working_dir.clone())
+            state.session_workdirs.get(thread_id).cloned()
         };
 
-        // Persist the workspace override for future reconnects/eviction rebuilds.
-        // Only persist on first assignment (session directives are immutable per ADR).
+        let effective_workdir = if let Some(stored) = stored_workdir {
+            stored
+        } else if let Some(wd) = working_dir_override {
+            wd.to_string()
+        } else {
+            self.config.working_dir.clone()
+        };
+
+        // Persist the workspace for future reconnects/eviction rebuilds (first time only).
         if working_dir_override.is_some() {
             let mut state = self.state.write().await;
             state

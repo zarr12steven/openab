@@ -61,7 +61,7 @@ Set the initial thread/channel title (max 100 characters, truncated silently).
 - Directives are **immutable** — once a session starts, parameters cannot be changed mid-conversation
 - To change workspace or title, start a new session
 - If no `[[ws:...]]` is specified, the session uses the bot's default working directory
-- If workspace resolution fails on a new session, the session is not created (no stale state left behind)
+- If workspace resolution fails on a new session, the session is not created. However, `[[title:...]]` is applied independently before workspace validation — the thread title may already be set even if the session aborts.
 
 ## Relationship to Output Directives
 

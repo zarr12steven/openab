@@ -125,6 +125,33 @@ async fn resolve_exec(key: &str, uri: &str, cfg: &SecretsConfig) -> anyhow::Resu
 
     let mut cmd = tokio::process::Command::new(script);
     cmd.kill_on_drop(true);
+
+    // Sanitized environment (same as pre_boot hooks — no unrelated tokens leak)
+    cmd.env_clear();
+    if let Ok(v) = std::env::var("HOME") {
+        cmd.env("HOME", &v);
+    }
+    if let Ok(v) = std::env::var("PATH") {
+        cmd.env("PATH", &v);
+    }
+    #[cfg(unix)]
+    if let Ok(v) = std::env::var("USER") {
+        cmd.env("USER", &v);
+    }
+    // Pass through cloud credential env vars for IAM-based auth
+    for (key, val) in std::env::vars() {
+        let pass = key.starts_with("AWS_")
+            || key.starts_with("AMAZON_")
+            || key.starts_with("ECS_CONTAINER_METADATA_URI")
+            || key.starts_with("GOOGLE_")
+            || key.starts_with("GCLOUD_")
+            || key.starts_with("CLOUDSDK_")
+            || key.starts_with("AZURE_");
+        if pass {
+            cmd.env(&key, &val);
+        }
+    }
+
     // Pass remaining parts as arguments (key, attribute)
     for arg in parts_iter {
         if !arg.is_empty() {

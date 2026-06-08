@@ -49,7 +49,7 @@ bot_token = "${DISCORD_BOT_TOKEN}"
 Build the AWS SDK into the openab binary and resolve secret references directly:
 
 ```toml
-[secrets]
+[secrets.refs]
 discord_token = "aws-sm://openab/prod#discord_bot_token"
 ```
 
@@ -67,7 +67,7 @@ discord_token = "aws-sm://openab/prod#discord_bot_token"
 Delegate secret fetching to an external script/binary:
 
 ```toml
-[secrets]
+[secrets.refs]
 vault_token = "exec://scripts/get-secret.sh vault/openab token"
 ```
 
@@ -126,10 +126,10 @@ secrets-gcp = ["google-cloud-secretmanager"]
 
 ### Config Syntax
 
-Secret references use URI-style strings in `config.toml` values:
+Secret references use URI-style strings under `[secrets.refs]` in `config.toml`:
 
 ```toml
-[secrets]
+[secrets.refs]
 # AWS Secrets Manager: aws-sm://<secret-name>#<json-key>
 discord_token = "aws-sm://openab/prod#discord_bot_token"
 openai_key    = "aws-sm://openab/prod#openai_api_key"
@@ -166,7 +166,7 @@ exec://<script-path> <key> <attribute>
 │                                                     │
 │  1. Parse config.toml                               │
 │  2. Execute [hooks.pre_boot]     ← scripts land here│
-│  3. Resolve [secrets] references ← THIS FEATURE     │
+│  3. Resolve [secrets.refs] references ← THIS FEATURE  │
 │  4. Spawn agent sessions                            │
 └─────────────────────────────────────────────────────┘
 ```
@@ -175,11 +175,12 @@ exec://<script-path> <key> <attribute>
 
 ### Resolution Semantics
 
-1. openab scans all config values for recognized URI prefixes (`aws-sm://`, `exec://`)
+1. openab reads `[secrets.refs]` table entries (each value is a URI: `aws-sm://` or `exec://`)
 2. For each reference, calls the appropriate provider
 3. Resolved values are stored in an in-memory `HashMap<String, String>`
-4. Config fields referencing secrets are replaced with resolved values before agent init
-5. On resolution failure: log error and exit non-zero (fail-closed)
+4. `${secrets.<key>}` placeholders elsewhere in config are replaced with resolved values (TOML-escaped)
+5. Config is re-parsed with substituted values
+6. On resolution failure: log error and exit non-zero (fail-closed)
 
 ### AWS Secrets Manager Provider
 
@@ -245,7 +246,7 @@ secrets:
     openai_key: "aws-sm://openab/prod#openai_api_key"
 ```
 
-The chart renders these into the `[secrets]` section of the generated `config.toml`.
+The chart renders these into the `[secrets.refs]` section of the generated `config.toml`.
 
 For AWS, the chart should include a `ServiceAccount` annotation for IRSA:
 
@@ -262,7 +263,7 @@ serviceAccount:
 ### Minimal: AWS Secrets Manager on EKS
 
 ```toml
-[secrets]
+[secrets.refs]
 discord_token = "aws-sm://openab/prod#discord_bot_token"
 openai_key    = "aws-sm://openab/prod#openai_api_key"
 
@@ -291,7 +292,7 @@ inline = '''
 vault login -method=kubernetes role=openab > /dev/null
 '''
 
-[secrets]
+[secrets.refs]
 db_password = "exec:///home/agent/.local/bin/vault-get.sh secret/openab db_password"
 ```
 
@@ -308,7 +309,7 @@ vault kv get -field="$2" "$1"
 [hooks.pre_boot]
 script = "/etc/openab/pre-boot.sh"
 
-[secrets]
+[secrets.refs]
 # AWS-managed secrets
 discord_token = "aws-sm://openab/prod#discord_bot_token"
 # Vault-managed secrets via exec

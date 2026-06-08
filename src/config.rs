@@ -86,6 +86,8 @@ pub struct Config {
     pub hooks: HooksConfig,
     #[serde(default)]
     pub workspace: WorkspaceConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -94,6 +96,44 @@ pub struct WorkspaceConfig {
     /// Used with `[[ws:@alias]]` control directives.
     #[serde(default)]
     pub aliases: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SecretsConfig {
+    /// AWS Secrets Manager configuration.
+    #[serde(default)]
+    pub aws: AwsSecretsConfig,
+    /// Exec provider configuration.
+    #[serde(default)]
+    pub exec: ExecSecretsConfig,
+    /// Secret references: key = "aws-sm://..." or "exec://..."
+    #[serde(default)]
+    pub refs: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AwsSecretsConfig {
+    /// Override AWS region (otherwise uses default credential chain).
+    pub region: Option<String>,
+    /// Override endpoint URL (for LocalStack or VPC endpoints).
+    pub endpoint_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecSecretsConfig {
+    /// Per-invocation timeout in seconds (default: 10).
+    #[serde(default = "default_exec_timeout")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for ExecSecretsConfig {
+    fn default() -> Self {
+        Self { timeout_seconds: 10 }
+    }
+}
+
+fn default_exec_timeout() -> u64 {
+    10
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -734,6 +774,48 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
     parse_config(&raw, path.display().to_string().as_str())
 }
 
+/// Load raw config text from a file path (env vars expanded but secrets NOT resolved).
+pub fn load_config_raw(path: &Path) -> anyhow::Result<String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+    Ok(expand_env_vars(&raw))
+}
+
+/// Load raw config text from a URL (env vars expanded but secrets NOT resolved).
+pub async fn load_config_raw_from_url(url: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to fetch remote config from {url}: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("remote config request to {url} returned HTTP {status}");
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read response body from {url}: {e}"))?;
+    const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+    if bytes.len() > MAX_CONFIG_BYTES {
+        anyhow::bail!(
+            "remote config from {url} exceeds 1 MiB limit ({} bytes)",
+            bytes.len()
+        );
+    }
+    let raw = String::from_utf8(bytes.to_vec())
+        .map_err(|e| anyhow::anyhow!("remote config from {url} is not valid UTF-8: {e}"))?;
+    Ok(expand_env_vars(&raw))
+}
+
+/// Parse config from already-expanded text.
+pub fn parse_config_str(expanded: &str, source: &str) -> anyhow::Result<Config> {
+    parse_config_inner(expanded, source)
+}
+
 pub async fn load_config_from_url(url: &str) -> anyhow::Result<Config> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -765,7 +847,11 @@ pub async fn load_config_from_url(url: &str) -> anyhow::Result<Config> {
 
 fn parse_config(raw: &str, source: &str) -> anyhow::Result<Config> {
     let expanded = expand_env_vars(raw);
-    let config: Config = toml::from_str(&expanded)
+    parse_config_inner(&expanded, source)
+}
+
+fn parse_config_inner(expanded: &str, source: &str) -> anyhow::Result<Config> {
+    let config: Config = toml::from_str(expanded)
         .map_err(|e| anyhow::anyhow!("failed to parse config from {source}: {e}"))?;
 
     // Validate max_buffered_messages > 0 (tokio::sync::mpsc::channel panics on 0)

@@ -14,6 +14,7 @@ mod markdown;
 mod media;
 mod reactions;
 mod remind;
+mod secrets;
 mod setup;
 mod slack;
 mod stt;
@@ -103,15 +104,18 @@ async fn main() -> anyhow::Result<()> {
     // -- Run path --
     let config_source = config_arg.unwrap_or_else(|| "config.toml".into());
 
-    let mut cfg = if config_source.starts_with("https://") {
+    // First pass: load config (env vars expanded, secrets NOT resolved yet)
+    let raw_expanded = if config_source.starts_with("https://") {
         info!(url = %config_source, "fetching remote config");
-        config::load_config_from_url(&config_source).await?
+        config::load_config_raw_from_url(&config_source).await?
     } else if config_source.starts_with("http://") {
         warn!(url = %config_source, "fetching remote config over plaintext HTTP — use HTTPS in production");
-        config::load_config_from_url(&config_source).await?
+        config::load_config_raw_from_url(&config_source).await?
     } else {
-        config::load_config(&PathBuf::from(&config_source))?
+        config::load_config_raw(&PathBuf::from(&config_source))?
     };
+
+    let mut cfg = config::parse_config_str(&raw_expanded, &config_source)?;
     info!(
         agent_cmd = %cfg.agent.command,
         pool_max = cfg.pool.max_sessions,
@@ -135,6 +139,14 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref hook) = cfg.hooks.pre_shutdown {
         hooks::validate_hook("pre_shutdown", hook)?;
     }
+
+    // Resolve secrets (after pre_boot hooks so exec:// scripts are available)
+    if !cfg.secrets.refs.is_empty() {
+        let resolved = secrets::resolve(&cfg.secrets).await?;
+        let substituted = secrets::substitute(&raw_expanded, &resolved);
+        cfg = config::parse_config_str(&substituted, &config_source)?;
+    }
+
     let shutdown_hook = cfg.hooks.pre_shutdown.clone();
 
     let pool = Arc::new(acp::SessionPool::new(cfg.agent, cfg.pool.max_sessions));

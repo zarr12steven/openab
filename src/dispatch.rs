@@ -697,6 +697,15 @@ async fn dispatch_batch(
     if created_now {
         if let Some(pr) = parse_result {
             if !pr.metadata.raw.is_empty() {
+                // Apply [[title:...]] override before ws check — title is independent.
+                if let Some(title) = &pr.metadata.title {
+                    if !title.is_empty() {
+                        if let Err(e) = adapter.rename_thread(&dispatch_channel, title).await {
+                            warn!(session_key, error = %e, "failed to apply title directive");
+                        }
+                    }
+                }
+
                 // If workspace resolution failed on a NEW session, rollback and abort.
                 // The session was created with default cwd — we must not leave it alive
                 // when the user explicitly requested a different workspace (ADR §3.1).
@@ -712,15 +721,6 @@ async fn dispatch_batch(
                 // Strip directives from the prompt
                 if let Some(first_msg) = batch.first_mut() {
                     first_msg.prompt = pr.prompt;
-                }
-
-                // Apply [[title:...]] override
-                if let Some(title) = &pr.metadata.title {
-                    if !title.is_empty() {
-                        if let Err(e) = adapter.rename_thread(&dispatch_channel, title).await {
-                            warn!(session_key, error = %e, "failed to apply title directive");
-                        }
-                    }
                 }
             }
         }

@@ -177,3 +177,12 @@ error_hold_ms = 2500
 # schedule = "0 0 * * 0"
 # channel = "123456789"
 # message = "generate weekly status report"
+
+# Workspace aliases for control directives: [[ws:@alias]]
+# Users can specify a workspace when starting a session, e.g.:
+#   @Bot [[ws:@openab]] help me debug the tests
+#
+# [workspace.aliases]
+# openab = "~/projects/openab"
+# infra  = "~/projects/infra-cdk"
+# web    = "~/projects/frontend"

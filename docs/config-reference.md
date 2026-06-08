@@ -291,6 +291,30 @@ Speech-to-text transcription for voice messages. Uses an OpenAI-compatible `/aud
 
 ---
 
+## `[workspace]`
+
+Workspace aliases for [Control Directives](adr/control-directives.md). Users specify `[[ws:@alias]]` in their first message to set the session's working directory.
+
+```toml
+[workspace.aliases]
+openab = "~/projects/openab"
+infra  = "~/projects/infra-cdk"
+web    = "~/projects/frontend"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `aliases` | map | `{}` | Key-value map of alias name → path. Users reference with `@` prefix: `[[ws:@openab]]`. Paths starting with `~` expand to `$HOME`. All paths must be within the bot's home directory (security boundary). |
+
+**Security:**
+- Relative paths are rejected
+- `~` expands to bot home (`$HOME`)
+- Paths are canonicalized and must be within bot home subtree
+- Symlink escapes are caught by canonicalization
+- Target must be an existing directory (not a file)
+
+---
+
 ## `[cron]`
 
 Everything cron-related lives under `[cron]`.

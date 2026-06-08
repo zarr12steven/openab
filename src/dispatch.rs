@@ -117,8 +117,18 @@ impl ThreadHandle {
 pub trait DispatchTarget: Send + Sync + 'static {
     fn reactions_config(&self) -> &ReactionsConfig;
 
+    /// Workspace aliases from config (for `[[ws:@alias]]` resolution).
+    fn workspace_aliases(&self) -> std::collections::HashMap<String, String>;
+
+    /// Bot home directory (security boundary for workspace resolution).
+    fn bot_home(&self) -> std::path::PathBuf;
+
     /// Ensure the ACP session for `session_key` exists (idempotent).
-    async fn ensure_session(&self, session_key: &str) -> Result<()>;
+    /// Returns `true` if a new session was created, `false` if it already existed.
+    async fn ensure_session(&self, session_key: &str, working_dir: Option<&str>) -> Result<bool>;
+
+    /// Destroy the session for `session_key` (used to rollback on directive failure).
+    async fn reset_session(&self, session_key: &str);
 
     /// Drive one ACP turn with the pre-packed `content_blocks`.
     #[allow(clippy::too_many_arguments)]
@@ -139,8 +149,20 @@ impl DispatchTarget for AdapterRouter {
         AdapterRouter::reactions_config(self)
     }
 
-    async fn ensure_session(&self, session_key: &str) -> Result<()> {
-        self.pool().get_or_create(session_key).await
+    fn workspace_aliases(&self) -> std::collections::HashMap<String, String> {
+        self.workspace_aliases_map()
+    }
+
+    fn bot_home(&self) -> std::path::PathBuf {
+        self.bot_home_path()
+    }
+
+    async fn ensure_session(&self, session_key: &str, working_dir: Option<&str>) -> Result<bool> {
+        self.pool().get_or_create(session_key, working_dir).await
+    }
+
+    async fn reset_session(&self, session_key: &str) {
+        let _ = self.pool().reset_session(session_key).await;
     }
 
     async fn stream_prompt_blocks(
@@ -624,22 +646,100 @@ async fn dispatch_batch(
     // Pack all arrival events into one Vec<ContentBlock> (§3.3).
     // Uses into_iter() to avoid deep-copying extra_blocks (may contain base64 image data).
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+    // Parse control directives from the first message in the batch (ADR: control-directives).
+    // Directives are only processed on the session's first message (§2.2).
+    //
+    // Strategy:
+    //   1. Parse directives (cheap text extraction — no mutation, no I/O)
+    //   2. Attempt workspace resolution if [[ws:...]] present (may fail gracefully)
+    //   3. Call ensure_session with resolved workspace — returns created_now
+    //   4. Only strip prompt and apply title/workspace if created_now == true
+    //   5. If created_now == false, the [[...]] text is preserved verbatim
+    let mut batch = batch;
+    let parse_result = batch
+        .first()
+        .map(|first_msg| crate::directives::parse_directives(&first_msg.prompt));
+
+    // Tentatively resolve [[ws:...]] — if resolution fails and the session turns out to
+    // be new, we abort. If the session already existed, resolution failure is irrelevant.
+    let ws_resolved: Option<Result<String, String>> = parse_result.as_ref().and_then(|pr| {
+        pr.metadata.raw.get("ws").map(|ws_value| {
+            let aliases = target.workspace_aliases();
+            let bot_home = target.bot_home();
+            crate::directives::resolve_workspace(ws_value, &aliases, &bot_home)
+                .map(|p| p.display().to_string())
+        })
+    });
+
+    // Extract workspace path for ensure_session (None if no directive or resolution failed).
+    let workspace_override: Option<String> =
+        ws_resolved.as_ref().and_then(|r| r.as_ref().ok().cloned());
+
+    // Ensure session exists. The create_gate mutex inside get_or_create serializes
+    // concurrent callers — only the winner gets created_now == true.
+    let created_now = match target
+        .ensure_session(&session_key, workspace_override.as_deref())
+        .await
+    {
+        Ok(created) => created,
+        Err(e) => {
+            let user_msg = format_user_error(&e.to_string());
+            let _ = adapter
+                .send_message(&dispatch_channel, &format!("⚠️ {user_msg}"))
+                .await;
+            error!("pool error in dispatch_batch: {e}");
+            return;
+        }
+    };
+
+    // Only apply directives if this is genuinely the first message (fresh session).
+    if created_now {
+        if let Some(pr) = parse_result {
+            if !pr.metadata.raw.is_empty() {
+                // Apply [[title:...]] independently — works regardless of ws outcome.
+                let title_to_apply = pr.metadata.title.clone();
+
+                // If workspace resolution failed on a NEW session, rollback and abort.
+                // Reset FIRST to minimize TOCTOU window (擺渡 F1), then rename.
+                if let Some(Err(e)) = ws_resolved {
+                    target.reset_session(&session_key).await;
+                    // Apply title after reset so the thread is identifiable.
+                    if let Some(ref title) = title_to_apply {
+                        if !title.is_empty() {
+                            let _ = adapter.rename_thread(&dispatch_channel, title).await;
+                        }
+                    }
+                    let _ = adapter
+                        .send_message(&dispatch_channel, &format!("⚠️ {e}"))
+                        .await;
+                    error!(session_key, error = %e, "workspace directive rejected");
+                    return;
+                }
+
+                // Strip directives from the prompt
+                if let Some(first_msg) = batch.first_mut() {
+                    first_msg.prompt = pr.prompt;
+                }
+
+                // Apply title on success path.
+                if let Some(ref title) = title_to_apply {
+                    if !title.is_empty() {
+                        if let Err(e) = adapter.rename_thread(&dispatch_channel, title).await {
+                            warn!(session_key, error = %e, "failed to apply title directive");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for msg in batch {
         let mut event_blocks =
             AdapterRouter::pack_arrival_event(&msg.sender_json, &msg.prompt, msg.extra_blocks);
         content_blocks.append(&mut event_blocks);
     }
     let packed_block_count = content_blocks.len();
-
-    // Ensure session exists.
-    if let Err(e) = target.ensure_session(&session_key).await {
-        let user_msg = format_user_error(&e.to_string());
-        let _ = adapter
-            .send_message(&dispatch_channel, &format!("⚠️ {user_msg}"))
-            .await;
-        error!("pool error in dispatch_batch: {e}");
-        return;
-    }
 
     let reactions_config = target.reactions_config().clone();
     let reactions = Arc::new(StatusReactionController::new(
@@ -1082,6 +1182,8 @@ mod tests {
             crate::markdown::TableMode::Off,
             crate::config::default_prompt_hard_timeout_secs(),
             crate::config::default_liveness_check_secs(),
+            std::collections::HashMap::new(),
+            std::path::PathBuf::from("/tmp"),
         ));
         Dispatcher::with_idle_timeout(router, 10, 24_000, grouping, DEFAULT_CONSUMER_IDLE_TIMEOUT)
     }
@@ -1272,12 +1374,26 @@ mod tests {
             &self.reactions
         }
 
-        async fn ensure_session(&self, _session_key: &str) -> Result<()> {
+        fn workspace_aliases(&self) -> std::collections::HashMap<String, String> {
+            std::collections::HashMap::new()
+        }
+
+        fn bot_home(&self) -> std::path::PathBuf {
+            std::path::PathBuf::from("/tmp")
+        }
+
+        async fn ensure_session(
+            &self,
+            _session_key: &str,
+            _working_dir: Option<&str>,
+        ) -> Result<bool> {
             if let Some(msg) = self.ensure_err.lock().unwrap().take() {
                 return Err(anyhow::anyhow!(msg));
             }
-            Ok(())
+            Ok(true)
         }
+
+        async fn reset_session(&self, _session_key: &str) {}
 
         async fn stream_prompt_blocks(
             &self,

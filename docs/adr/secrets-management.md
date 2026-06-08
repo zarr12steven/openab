@@ -135,8 +135,8 @@ discord_token = "aws-sm://openab/prod#discord_bot_token"
 openai_key    = "aws-sm://openab/prod#openai_api_key"
 
 # Exec provider: exec://<script-path> <key> <attribute>
-vault_token   = "exec://scripts/get-secret.sh vault/openab token"
-custom_key    = "exec://scripts/get-secret.sh myservice api_key"
+vault_token   = "exec:///home/agent/.local/bin/get-secret.sh vault/openab token"
+custom_key    = "exec:///home/agent/.local/bin/get-secret.sh myservice api_key"
 ```
 
 ### Reference Format
@@ -292,7 +292,7 @@ vault login -method=kubernetes role=openab > /dev/null
 '''
 
 [secrets]
-db_password = "exec:///usr/local/bin/vault-get.sh secret/openab db_password"
+db_password = "exec:///home/agent/.local/bin/vault-get.sh secret/openab db_password"
 ```
 
 Where `vault-get.sh`:
@@ -312,7 +312,7 @@ script = "/etc/openab/pre-boot.sh"
 # AWS-managed secrets
 discord_token = "aws-sm://openab/prod#discord_bot_token"
 # Vault-managed secrets via exec
-github_token  = "exec:///opt/scripts/vault-get.sh secret/openab github_pat"
+github_pat    = "exec:///home/agent/.local/bin/get-secret.sh vault/openab github_pat"
 
 [secrets.aws]
 region = "ap-northeast-1"

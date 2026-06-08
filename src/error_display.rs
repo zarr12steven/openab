@@ -76,7 +76,7 @@ pub fn format_coded_error(code: i64, message: &str, data_message: Option<&str>) 
     } else {
         format!("{} (code: {})\n{}", prefix, code, message)
     };
-    let detail = data_message.filter(|s| !s.is_empty());
+    let detail = data_message.filter(|s| !s.trim().is_empty());
     if let Some(detail) = detail {
         if !message.contains(detail) {
             out.push_str("\n> ");
@@ -84,7 +84,7 @@ pub fn format_coded_error(code: i64, message: &str, data_message: Option<&str>) 
         }
     } else if code == -32603 {
         out.push_str(
-            "\n\n_The agent did not return any error details via ACP. \
+            "\n\n_The agent did not return any error details. \
              Please check the agent's own logs for more information._",
         );
     }
@@ -285,10 +285,8 @@ mod tests {
     fn format_coded_error_32603_whitespace_detail_shows_fallback() {
         // Whitespace-only detail should be treated as empty
         let result = format_coded_error(-32603, "Internal error", Some("   "));
-        // Current impl: "   " is non-empty so it won't trigger fallback,
-        // but it also won't be appended since message doesn't contain it.
-        // This documents the current behavior.
         assert!(result.contains("Internal Error"));
+        assert!(result.contains("did not return any error details"));
     }
 
     #[test]

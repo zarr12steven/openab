@@ -47,3 +47,10 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "workspace must be a map"
+
+  - it: rejects workspace.aliases as non-map type
+    set:
+      agents.kiro.workspace.aliases: "not-a-map"
+    asserts:
+      - failedTemplate:
+          errorPattern: "workspace.aliases must be a map"

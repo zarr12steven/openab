@@ -503,7 +503,6 @@ Key mapping (`values.yaml` → `config.toml`):
 | `agents.<name>.workspace.aliases.<alias>` | `[workspace.aliases] <alias>` |
 | `agents.<name>.reactions.enabled` | `[reactions] enabled` |
 | `agents.<name>.reactions.toolDisplay` | `[reactions] tool_display` |
-| `agents.<name>.workspace.aliases.<alias>` | `[workspace.aliases] <alias>` |
 | `agents.<name>.stt.apiKey` | `[stt] api_key` |
 | `agents.<name>.cronjobs[].enabled` | `[[cron.jobs]] enabled` |
 | `agents.<name>.cronjobs[].schedule` | `[[cron.jobs]] schedule` |

@@ -319,6 +319,9 @@ data:
     {{- fail (printf "agents.%s.workspace must be a map — got: %v" $name $cfg.workspace) }}
     {{- end }}
     {{- if ($cfg.workspace).aliases }}
+    {{- if not (kindIs "map" ($cfg.workspace).aliases) }}
+    {{- fail (printf "agents.%s.workspace.aliases must be a map — got: %v" $name ($cfg.workspace).aliases) }}
+    {{- end }}
 
     [workspace.aliases]
     {{- range $alias, $path := ($cfg.workspace).aliases }}

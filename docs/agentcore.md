@@ -119,12 +119,12 @@ The runtime fetches the key at boot — no plaintext secrets in env vars or conf
 ## How It Works
 
 ```
-┌─────────┐       ┌─────────┐  ACP   ┌───────────────┐  SDK   ┌─────────────────────┐
-│ Discord │──────▶│   OAB   │───────▶│ agentcore-acp │──────▶│  AgentCore Runtime   │
-│  Slack  │       │         │ stdio  │  (Python)     │       │  (Firecracker μVM)   │
-└─────────┘       └─────────┘        └───────────────┘       │  ┌───────────────┐   │
-                                                               │  │ Kiro/Claude/… │   │
-                                                               │  └───────────────┘   │
+┌─────────┐       ┌─────────┐  ACP   ┌───────────────┐  SDK    ┌─────────────────────┐
+│ Discord │──────▶│   OAB   │───────▶│ agentcore-acp │──────▶  │  AgentCore Runtime  │
+│  Slack  │       │         │ stdio  │  (Python)     │         │  (Firecracker μVM)  │
+└─────────┘       └─────────┘        └───────────────┘         │  ┌───────────────┐  │
+                                                               │  │ Kiro/Claude/… │  │
+                                                               │  └───────────────┘  │
                                                                └─────────────────────┘
 ```
 

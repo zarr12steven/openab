@@ -182,12 +182,12 @@ The bot creates a thread. After that, just type in the thread — no @mention ne
 Run any coding agent remotely on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime.html) — no CLI bundled in the OAB image.
 
 ```
-┌─────────┐       ┌─────────┐        ┌───────────────┐       ┌──────────────────────────┐
-│ Discord │       │         │  ACP   │               │  AWS  │   AgentCore Runtime      │
-│  Slack  │──────▶│   OAB   │───────▶│ agentcore-acp │──────▶│   ┌──────────────────┐   │
-│Telegram │       │         │ stdio  │   (adapter)   │  SDK  │   │ Firecracker μVM  │   │
-└─────────┘       └─────────┘        └───────────────┘       │   │  Kiro / Claude…  │   │
-                                                               │   │  /mnt/workspace   │   │
+┌─────────┐       ┌─────────┐        ┌───────────────┐         ┌──────────────────────────┐
+│ Discord │       │         │  ACP   │               │  AWS    │   AgentCore Runtime      │
+│  Slack  │──────▶│   OAB   │───────▶│ agentcore-acp │──────▶  │   ┌──────────────────┐   │
+│Telegram │       │         │ stdio  │   (adapter)   │  SDK    │   │ Firecracker μVM  │   │
+└─────────┘       └─────────┘        └───────────────┘         │   │  Kiro / Claude…  │   │
+                                                               │   │  /mnt/workspace  │   │
                                                                │   └──────────────────┘   │
                                                                └──────────────────────────┘
 ```

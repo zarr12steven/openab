@@ -215,52 +215,18 @@ image_generation = true
 > keys in `config.toml`, not under a `[sandbox]` section. Codex silently ignores
 > them if nested.
 
-Or mount a `ConfigMap` containing the codex `config.toml` into the agent via the
-chart's `extraVolumes` / `extraVolumeMounts` (the chart does not expose a
-dedicated `extraConfig` value — anything written into the codex config file has
-to come in as a mounted file or be pre-seeded into the PVC):
-
-```bash
-# Create the codex config as a ConfigMap.
-kubectl create configmap codex-config \
-  --from-literal=config.toml='
-sandbox_mode = "danger-full-access"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
-
-[features]
-image_generation = true
-'
-
-# values.yaml — mount it over /home/node/.codex/config.toml
-agents:
-  codex:
-    extraVolumes:
-      - name: codex-config
-        configMap:
-          name: codex-config
-    extraVolumeMounts:
-      - name: codex-config
-        mountPath: /home/node/.codex/config.toml
-        subPath: config.toml
-```
-
-> Mounting `config.toml` from a ConfigMap makes the file read-only inside the
-> pod. If you also need codex to write back to it (e.g. `codex features enable`
-> persisting flags), pre-seed the config on the PVC instead.
-
-Alternatively, copy a local `config.toml` directly into the running pod's PVC
-(writable, persists across restarts):
+Or seed the config into the running pod's PVC with `kubectl cp` (writable,
+persists across restarts):
 
 ```bash
 kubectl cp config.toml <pod-name>:/home/node/.codex/config.toml
-```
-
-Then restart to pick up the changes:
-
-```bash
 kubectl rollout restart deployment/openab-codex
 ```
+
+> **Do not mount a ConfigMap directly to `/home/node/.codex/config.toml`.**
+> ConfigMap mounts are read-only — Codex cannot write back to them (e.g.
+> `codex features enable` will fail with permission denied). Always use
+> `kubectl cp` to seed config onto the PVC, which remains writable at runtime.
 
 ### What Auto-review does
 
@@ -339,24 +305,12 @@ Or launch with:
 codex --sandbox danger-full-access
 ```
 
-Or mount a ConfigMap via the chart's `extraVolumes` / `extraVolumeMounts`:
+Or seed via `kubectl cp` (see [above](#approval-policy--auto-review) for why
+ConfigMap mounts should not be used for `.codex/config.toml`):
 
 ```bash
-kubectl create configmap codex-config --from-file=config.toml=/path/to/config.toml
-```
-
-```yaml
-# values.yaml
-agents:
-  codex:
-    extraVolumes:
-      - name: codex-config
-        configMap:
-          name: codex-config
-    extraVolumeMounts:
-      - name: codex-config
-        mountPath: /home/node/.codex/config.toml
-        subPath: config.toml
+kubectl cp config.toml <pod-name>:/home/node/.codex/config.toml
+kubectl rollout restart deployment/openab-codex
 ```
 
 > **Important:** `danger-full-access` disables only Codex's *inner* sandbox. It

@@ -12,6 +12,7 @@ mod gateway;
 mod hooks;
 mod markdown;
 mod media;
+mod multibot_cache;
 mod reactions;
 mod remind;
 mod secrets;
@@ -232,12 +233,23 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(discord::DiscordAdapter::new(http)) as Arc<dyn adapter::ChatAdapter>
         });
     let session_ttl_dur = std::time::Duration::from_secs(ttl_secs);
+
+    // Initialize multibot cache (persists to $HOME/.openab/cache/threads.json)
+    let multibot_cache_path = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join(".openab")
+        .join("cache")
+        .join("threads.json");
+    let multibot_cache = multibot_cache::MultibotCache::load(multibot_cache_path);
+
     let shared_slack_adapter: Option<Arc<slack::SlackAdapter>> = cfg.slack.as_ref().map(|s| {
         Arc::new(slack::SlackAdapter::new(
             s.bot_token.clone(),
             session_ttl_dur,
             s.allow_bot_messages,
             s.assistant_mode,
+            multibot_cache.clone(),
         ))
     });
 
@@ -479,6 +491,7 @@ async fn main() -> anyhow::Result<()> {
             allowed_role_ids,
             participated_threads: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             multibot_threads: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            multibot_cache,
             session_ttl: std::time::Duration::from_secs(ttl_secs),
             max_bot_turns: discord_cfg.max_bot_turns,
             bot_turns: tokio::sync::Mutex::new(bot_turns::BotTurnTracker::new(

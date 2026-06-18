@@ -75,6 +75,8 @@ pub struct SlackAdapter {
     /// Positive-only cache: thread_ts → cached_at for threads where other bots have posted.
     /// Like participation, a thread becoming multi-bot is irreversible (bot messages don't disappear).
     multibot_threads: tokio::sync::Mutex<HashMap<String, tokio::time::Instant>>,
+    /// Persistent disk cache for multibot thread detection (survives restarts).
+    multibot_cache: crate::multibot_cache::MultibotCache,
     /// TTL for participation cache entries (matches session_ttl_hours from config).
     session_ttl: std::time::Duration,
     /// Assistant mode: stream via chat.startStream + assistant.threads.setStatus.
@@ -91,6 +93,7 @@ impl SlackAdapter {
         session_ttl: std::time::Duration,
         _allow_bot_messages: AllowBots,
         assistant_mode: bool,
+        multibot_cache: crate::multibot_cache::MultibotCache,
     ) -> Self {
         Self {
             // Bound every Slack Web API call; an unbounded inline gating call in the
@@ -105,6 +108,7 @@ impl SlackAdapter {
             bot_id_cache: tokio::sync::Mutex::new(HashMap::new()),
             participated_threads: tokio::sync::Mutex::new(HashMap::new()),
             multibot_threads: tokio::sync::Mutex::new(HashMap::new()),
+            multibot_cache,
             session_ttl,
             assistant_mode,
             streams: tokio::sync::Mutex::new(HashMap::new()),
@@ -120,11 +124,15 @@ impl SlackAdapter {
     /// event loop when a bot message arrives, so multibot detection doesn't
     /// depend on fetching thread history. Idempotent.
     async fn note_other_bot_in_thread(&self, thread_ts: &str) {
-        let mut cache = self.multibot_threads.lock().await;
-        cache
-            .entry(thread_ts.to_string())
-            .or_insert_with(tokio::time::Instant::now);
-        enforce_cache_bounds(&mut cache, self.session_ttl);
+        {
+            let mut cache = self.multibot_threads.lock().await;
+            cache
+                .entry(thread_ts.to_string())
+                .or_insert_with(tokio::time::Instant::now);
+            enforce_cache_bounds(&mut cache, self.session_ttl);
+        }
+        // Persist to disk — multibot is irreversible
+        self.multibot_cache.mark_multibot(thread_ts).await;
     }
 
 
@@ -322,7 +330,7 @@ impl SlackAdapter {
             cache
                 .get(thread_ts)
                 .is_some_and(|ts| ts.elapsed() < self.session_ttl)
-        };
+        } || self.multibot_cache.is_multibot(thread_ts);
 
         // Eager multibot detection from message events populates the cache
         // before this runs. When already involved and cached, skip the fetch.
@@ -369,18 +377,12 @@ impl SlackAdapter {
         let bot_posted = messages.iter().any(|m| m["user"].as_str() == Some(bot_id));
 
         let involved = parent_mentions_bot || bot_posted;
-        let other_bot_present = cached_multibot
-            || messages.iter().any(|m| {
-                let is_bot_msg =
-                    m["bot_id"].is_string() || m["subtype"].as_str() == Some("bot_message");
-                is_bot_msg && m["user"].as_str() != Some(bot_id)
-            });
+        // other_bot_present relies solely on early detection + disk cache;
+        // no longer scanned from fetched messages (200-msg window was unreliable).
+        let other_bot_present = cached_multibot;
 
         if involved {
             self.cache_participation(thread_ts).await;
-        }
-        if other_bot_present && !cached_multibot {
-            self.note_other_bot_in_thread(thread_ts).await;
         }
 
         (involved, other_bot_present)
@@ -1495,7 +1497,10 @@ async fn handle_message(
                 .get(ts)
                 .is_some_and(|inst| inst.elapsed() < adapter.session_ttl)
         })
-    };
+    } || thread_channel
+        .thread_id
+        .as_deref()
+        .is_some_and(|ts| adapter.multibot_cache.is_multibot(ts));
 
     // Best-effort echo before the agent reply so the user can verify STT.
     crate::stt::post_echo(
@@ -1835,7 +1840,7 @@ mod tests {
 
     #[tokio::test]
     async fn degraded_stream_append_accumulates() {
-        let adapter = SlackAdapter::new("xoxb-test".into(), std::time::Duration::from_secs(60), AllowBots::Off, true);
+        let adapter = SlackAdapter::new("xoxb-test".into(), std::time::Duration::from_secs(60), AllowBots::Off, true, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
         adapter.streams.lock().await.insert(
             "TS".into(),
             StreamEntry { active: false, degraded_buf: String::new() },
@@ -2144,7 +2149,7 @@ mod tests {
     #[test]
     fn streaming_per_thread() {
         let ttl = std::time::Duration::from_secs(300);
-        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, false);
+        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, false, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
 
         assert!(
             adapter.use_streaming(false),
@@ -2161,13 +2166,13 @@ mod tests {
         let ttl = std::time::Duration::from_secs(60);
         // assistant_mode=true → status API on; native streaming on (no other bot),
         // off when another bot is present; post+edit streaming on regardless.
-        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Off, true);
+        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Off, true, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
         assert!(adapter.uses_assistant_status(), "assistant_mode enables status API");
         assert!(adapter.use_streaming(false), "post+edit streaming on when no other bot");
         assert!(adapter.uses_native_streaming(false), "native streaming on when no other bot");
         assert!(!adapter.uses_native_streaming(true), "other bot present disables native");
         // assistant_mode=false → no status API, no native streaming; post+edit still streams.
-        let adapter2 = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Off, false);
+        let adapter2 = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Off, false, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
         assert!(!adapter2.uses_assistant_status());
         assert!(adapter2.use_streaming(false), "post+edit streaming independent of assistant_mode");
         assert!(!adapter2.uses_native_streaming(false), "native streaming requires assistant_mode");
@@ -2224,7 +2229,7 @@ mod tests {
     #[test]
     fn typical_long_table_stays_in_one_chunk() {
         let ttl = std::time::Duration::from_secs(300);
-        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, true);
+        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, true, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
         let limit = adapter.message_limit();
         assert_eq!(limit, MARKDOWN_BLOCK_LIMIT);
         let mut table = String::from("| col a | col b | col c |\n|---|---|---|\n");
@@ -2286,7 +2291,7 @@ mod tests {
     #[test]
     fn slack_renders_native_tables() {
         let ttl = std::time::Duration::from_secs(300);
-        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, true);
+        let adapter = SlackAdapter::new("xoxb-test".into(), ttl, AllowBots::Mentions, true, crate::multibot_cache::MultibotCache::load("/dev/null".into()));
         assert!(adapter.renders_native_tables());
     }
 }

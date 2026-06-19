@@ -923,7 +923,17 @@ impl AdapterRouter {
                     };
 
                     let final_content = markdown::convert_tables(&final_content, table_mode);
-                    let chunks = format::split_message(&final_content, message_limit);
+                    let chunks = if adapter.platform() == "discord" {
+                        let mentions = extract_mentions(&final_content);
+                        let mention_reserve = mention_footer_len(&mentions);
+                        let chunks = format::split_message(
+                            &final_content,
+                            message_limit.saturating_sub(mention_reserve),
+                        );
+                        propagate_mentions_to_chunks(chunks, &mentions, message_limit)
+                    } else {
+                        format::split_message(&final_content, message_limit)
+                    };
                     // Track delivery health across all final write paths. Any failure
                     // here means the user's view is incomplete; we propagate Err at the
                     // end of the closure so dispatch surfaces set_error (❌) instead of
@@ -1137,6 +1147,122 @@ impl AdapterRouter {
             })
             .await
     }
+}
+
+/// Extract all Discord mentions (`<@123>`, `<@!123>`, `<@&123>`) from content,
+/// skipping mentions inside fenced code blocks (``` ... ```).
+/// Normalizes `<@!UID>` to `<@UID>` for deduplication (same user).
+/// Returns deduplicated list in appearance order.
+fn extract_mentions(content: &str) -> Vec<String> {
+    let mut mentions = Vec::new();
+    let mut in_fence = false;
+
+    for line in content.split('\n') {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'<' && bytes[i + 1] == b'@' {
+                let (prefix_end, is_role) = if i + 2 < bytes.len() && bytes[i + 2] == b'&' {
+                    (i + 3, true)
+                } else if i + 2 < bytes.len() && bytes[i + 2] == b'!' {
+                    (i + 3, false)
+                } else {
+                    (i + 2, false)
+                };
+                if prefix_end < bytes.len() && bytes[prefix_end].is_ascii_digit() {
+                    if let Some(end) = line[prefix_end..].find('>') {
+                        if line[prefix_end..prefix_end + end]
+                            .chars()
+                            .all(|c| c.is_ascii_digit())
+                        {
+                            // Normalize: <@!UID> → <@UID>, keep <@&RoleID> as-is
+                            let uid = &line[prefix_end..prefix_end + end];
+                            let normalized = if is_role {
+                                format!("<@&{uid}>")
+                            } else {
+                                format!("<@{uid}>")
+                            };
+                            if !mentions.contains(&normalized) {
+                                mentions.push(normalized);
+                            }
+                            i = prefix_end + end + 1;
+                            continue;
+                        }
+                    }
+                }
+                i = prefix_end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    mentions
+}
+
+/// Compute the char length of the mention footer that will be appended.
+/// Returns 0 if no mentions or only 1 chunk would be produced.
+fn mention_footer_len(mentions: &[String]) -> usize {
+    if mentions.is_empty() {
+        return 0;
+    }
+    // "\n" + mentions joined by " "
+    1 + mentions.iter().map(|m| m.len()).sum::<usize>() + mentions.len().saturating_sub(1)
+}
+
+/// Append mentions to split chunks that don't already contain them.
+/// Ensures every chunk carries all mentions from the original content so
+/// receiving bots under `allow_bot_messages = "mentions"` gate accept all pieces.
+/// `limit` is the hard message limit (e.g. 2000) — chunks that would exceed it
+/// after appending are left unchanged (they already fit within split_message's
+/// reduced limit, so the mention_reserve guarantees space in normal cases).
+fn propagate_mentions_to_chunks(
+    chunks: Vec<String>,
+    mentions: &[String],
+    limit: usize,
+) -> Vec<String> {
+    if mentions.is_empty() || chunks.len() <= 1 {
+        return chunks;
+    }
+    chunks
+        .into_iter()
+        .map(|chunk| {
+            let missing: Vec<&String> = mentions
+                .iter()
+                .filter(|m| !chunk_contains_mention(&chunk, m))
+                .collect();
+            if missing.is_empty() {
+                chunk
+            } else {
+                let footer = format!(
+                    "\n{}",
+                    missing.iter().map(|m| m.as_str()).collect::<Vec<_>>().join(" ")
+                );
+                if chunk.chars().count() + footer.chars().count() <= limit {
+                    format!("{chunk}{footer}")
+                } else {
+                    // Safety: don't exceed limit; chunk already passes gate
+                    // if it contained the mention from the original content.
+                    chunk
+                }
+            }
+        })
+        .collect()
+}
+
+/// Check if a chunk contains an exact mention.
+/// Since mentions are formatted as `<@DIGITS>` (terminated by `>`), a simple
+/// substring search is sufficient — `<@123>` cannot match inside `<@1234>`
+/// because the `>` acts as an exact boundary delimiter.
+fn chunk_contains_mention(chunk: &str, mention: &str) -> bool {
+    chunk.contains(mention)
 }
 
 /// Returns true if `content` contains a Discord user/bot mention (`<@123>`, `<@!123>`)
@@ -1504,6 +1630,186 @@ mod tests {
     #[test]
     fn contains_bot_mention_embedded() {
         assert!(contains_bot_mention("請問 <@1501788608439386172> 1+1=?"));
+    }
+
+    #[test]
+    fn extract_mentions_basic() {
+        let mentions = extract_mentions("hello <@123> and <@&456> world");
+        assert_eq!(mentions, vec!["<@123>", "<@&456>"]);
+    }
+
+    #[test]
+    fn extract_mentions_dedup() {
+        let mentions = extract_mentions("<@123> foo <@123> bar");
+        assert_eq!(mentions, vec!["<@123>"]);
+    }
+
+    #[test]
+    fn extract_mentions_normalizes_nickname() {
+        // <@!789> should be normalized to <@789>
+        let mentions = extract_mentions("hey <@!789>");
+        assert_eq!(mentions, vec!["<@789>"]);
+    }
+
+    #[test]
+    fn extract_mentions_dedup_after_normalize() {
+        // <@123> and <@!123> are the same user
+        let mentions = extract_mentions("<@123> and <@!123>");
+        assert_eq!(mentions, vec!["<@123>"]);
+    }
+
+    #[test]
+    fn extract_mentions_skips_code_blocks() {
+        let content = "hello <@111>\n```\n<@222>\n```\nworld <@333>";
+        let mentions = extract_mentions(content);
+        assert_eq!(mentions, vec!["<@111>", "<@333>"]);
+    }
+
+    #[test]
+    fn extract_mentions_none() {
+        let mentions = extract_mentions("no mentions here");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn mention_footer_len_empty() {
+        assert_eq!(mention_footer_len(&[]), 0);
+    }
+
+    #[test]
+    fn mention_footer_len_single() {
+        // "\n<@123>" = 1 + 6 = 7
+        assert_eq!(mention_footer_len(&["<@123>".to_string()]), 7);
+    }
+
+    #[test]
+    fn mention_footer_len_multiple() {
+        // "\n<@123> <@456>" = 1 + 6 + 1 + 6 = 14
+        let mentions = vec!["<@123>".to_string(), "<@456>".to_string()];
+        assert_eq!(mention_footer_len(&mentions), 14);
+    }
+
+    #[test]
+    fn propagate_mentions_single_chunk() {
+        let chunks = vec!["hello <@123>".to_string()];
+        let result = propagate_mentions_to_chunks(chunks.clone(), &["<@123>".to_string()], 2000);
+        assert_eq!(result, chunks);
+    }
+
+    #[test]
+    fn propagate_mentions_appends_to_all_chunks() {
+        let chunks = vec![
+            "first chunk no mention".to_string(),
+            "second chunk".to_string(),
+            "third chunk".to_string(),
+        ];
+        let result = propagate_mentions_to_chunks(chunks, &["<@123>".to_string()], 2000);
+        assert!(result[0].ends_with("\n<@123>"));
+        assert!(result[1].ends_with("\n<@123>"));
+        assert!(result[2].ends_with("\n<@123>"));
+    }
+
+    #[test]
+    fn propagate_mentions_skips_already_present() {
+        let chunks = vec![
+            "hello <@123>".to_string(),
+            "world <@123>".to_string(),
+        ];
+        let result = propagate_mentions_to_chunks(chunks.clone(), &["<@123>".to_string()], 2000);
+        assert_eq!(result, chunks);
+    }
+
+    #[test]
+    fn propagate_mentions_respects_limit() {
+        // Chunk at exactly limit - no room to append
+        let chunk = "x".repeat(2000);
+        let chunks = vec!["short <@123>".to_string(), chunk.clone()];
+        let result = propagate_mentions_to_chunks(chunks, &["<@123>".to_string()], 2000);
+        // Second chunk unchanged (would exceed limit)
+        assert_eq!(result[1], chunk);
+    }
+
+    #[test]
+    fn propagate_mentions_multiple() {
+        let chunks = vec![
+            "<@111> and <@222> start".to_string(),
+            "middle".to_string(),
+        ];
+        let mentions = vec!["<@111>".to_string(), "<@222>".to_string()];
+        let result = propagate_mentions_to_chunks(chunks, &mentions, 2000);
+        assert_eq!(result[1], "middle\n<@111> <@222>");
+    }
+
+    #[test]
+    fn propagate_mentions_empty() {
+        let chunks = vec!["hello".to_string(), "world".to_string()];
+        let result = propagate_mentions_to_chunks(chunks.clone(), &[], 2000);
+        assert_eq!(result, chunks);
+    }
+
+    #[test]
+    fn chunk_contains_mention_exact() {
+        assert!(chunk_contains_mention("hello <@123> world", "<@123>"));
+        assert!(chunk_contains_mention("<@123>", "<@123>"));
+    }
+
+    #[test]
+    fn chunk_contains_mention_not_substring() {
+        // <@123> ends with > so it won't match inside <@1234>
+        // because <@1234> is "<@1234>" not "<@123>4"
+        assert!(!chunk_contains_mention("hello <@1234> world", "<@123>"));
+    }
+
+    #[test]
+    fn pipeline_split_then_propagate() {
+        // End-to-end: split a message that exceeds limit, then propagate mentions.
+        use crate::format::split_message;
+        let mention = "<@99999>";
+        let body = "x".repeat(80);
+        let content = format!("{mention} {body}");
+        let limit: usize = 50;
+        let mentions = extract_mentions(&content);
+        let reserve = mention_footer_len(&mentions);
+        let chunks = split_message(&content, limit.saturating_sub(reserve));
+        let result = propagate_mentions_to_chunks(chunks, &mentions, limit);
+        // Every chunk must carry the mention and fit within limit.
+        for chunk in &result {
+            assert!(chunk.contains(mention), "chunk missing mention: {chunk}");
+            assert!(chunk.chars().count() <= limit, "chunk exceeds limit");
+        }
+    }
+
+    #[test]
+    fn extract_mentions_unclosed_fence() {
+        // Unclosed code fence — everything after it is "inside" fence, so no mentions extracted.
+        let content = "hello <@111>\n```\n<@222>\n<@333>";
+        let mentions = extract_mentions(content);
+        assert_eq!(mentions, vec!["<@111>"]);
+    }
+
+    #[test]
+    fn saturating_sub_large_reserve() {
+        // When mention_reserve exceeds the limit, saturating_sub yields 0.
+        // split_message with limit=0 puts nothing in first chunk but must not panic.
+        use crate::format::split_message;
+        let mentions = vec!["<@111111111111111111>".to_string(); 200];
+        let reserve = mention_footer_len(&mentions);
+        let limit: usize = 100;
+        // saturating_sub → 0
+        let effective = limit.saturating_sub(reserve);
+        assert_eq!(effective, 0);
+        let chunks = split_message("short", effective);
+        // Should not panic; propagation returns chunks unchanged when they'd exceed limit.
+        let result = propagate_mentions_to_chunks(chunks, &mentions, limit);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn role_vs_user_mention_distinction() {
+        // <@&123> (role) and <@123> (user) are distinct mentions.
+        let content = "<@123> hello <@&123>";
+        let mentions = extract_mentions(content);
+        assert_eq!(mentions, vec!["<@123>", "<@&123>"]);
     }
 }
 

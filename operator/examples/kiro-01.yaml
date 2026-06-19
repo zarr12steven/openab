@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../schema/oabservice-v2.json
 apiVersion: oab.dev/v2
 kind: OABService
 metadata:

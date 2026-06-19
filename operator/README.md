@@ -32,7 +32,7 @@ oabctl delete oabservice kiro-01 --cluster default --namespace prod
 ## Manifest Schema
 
 ```yaml
-apiVersion: oab.dev/v1
+apiVersion: oab.dev/v2
 kind: OABService
 metadata:
   name: kiro-01
@@ -73,7 +73,7 @@ spec:
 
 ## JSON Schema
 
-The manifest schema is defined in [`schema/oabservice-v1.json`](schema/oabservice-v1.json) for IDE validation.
+The manifest schema is defined in [`schema/oabservice-v2.json`](schema/oabservice-v2.json) for IDE validation.
 
 ## Commands
 

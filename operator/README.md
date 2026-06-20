@@ -59,7 +59,7 @@ oabctl bootstrap
 oabctl create my-bot
 
 # 3. Review generated files, then deploy
-oabctl apply -f my-bot/manifest.yaml
+oabctl apply -f my-bot/manifest.yaml --wait
 
 # 4. Done! Agent is running.
 oabctl exec my-bot -- bash

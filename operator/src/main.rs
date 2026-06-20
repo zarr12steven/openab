@@ -33,6 +33,9 @@ enum Commands {
         /// Namespace
         #[arg(long, default_value = "prod")]
         namespace: String,
+        /// Automatically apply after generating (default: just create files)
+        #[arg(long)]
+        auto_apply: bool,
     },
     /// List OAB services and their status
     Get {
@@ -118,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Apply { file, no_sync } => apply::run(&config, &file, !no_sync).await,
-        Commands::Create { name, namespace } => create::run(&config, &name, &namespace).await,
+        Commands::Create { name, namespace, auto_apply } => create::run(&config, &name, &namespace, auto_apply).await,
         Commands::Get { resource, name, cluster } => get::run(&config, &resource, name.as_deref(), &cluster).await,
         Commands::Delete { resource, name, cluster, namespace } => {
             delete::run(&config, &resource, &name, &cluster, &namespace).await

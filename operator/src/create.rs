@@ -15,7 +15,7 @@ const BACKENDS: &[(&str, &str)] = &[
 
 const CHANNELS: &[&str] = &["stable", "beta"];
 
-pub async fn run(config: &aws_config::SdkConfig, name: &str, namespace: &str) -> Result<()> {
+pub async fn run(config: &aws_config::SdkConfig, name: &str, namespace: &str, auto_apply: bool) -> Result<()> {
     eprintln!("🤖 Creating agent: {name}\n");
 
     // 1. Backend
@@ -139,16 +139,23 @@ pub async fn run(config: &aws_config::SdkConfig, name: &str, namespace: &str) ->
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     if !input.trim().is_empty() && !input.trim().eq_ignore_ascii_case("y") {
-        eprintln!("Aborted. Local files saved to {dir}/");
+        eprintln!("Aborted.");
         return Ok(());
     }
 
-    // ─── Apply (with --sync to upload config.toml) ───────────────────────
-    eprintln!();
-    crate::apply::run(config, &format!("{dir}/manifest.yaml"), true).await?;
+    eprintln!("\n✅ Created {name}/");
+    eprintln!("   {dir}/manifest.yaml");
+    eprintln!("   {dir}/config.toml\n");
 
-    eprintln!("\n✅ Agent {name} is running!");
-    eprintln!("   oabctl exec {name} -- bash");
+    if auto_apply {
+        // ─── Apply (with sync to upload config.toml) ───────────────────────
+        crate::apply::run(config, &format!("{dir}/manifest.yaml"), true).await?;
+        eprintln!("\n✅ Agent {name} is running!");
+        eprintln!("   oabctl exec {name} -- bash");
+    } else {
+        eprintln!("To deploy:");
+        eprintln!("   oabctl apply -f {dir}/manifest.yaml");
+    }
     Ok(())
 }
 

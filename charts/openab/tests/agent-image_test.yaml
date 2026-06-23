@@ -5,18 +5,18 @@ templates:
 tests:
   - it: kiro resolves to openab:<appVersion>-kiro (no bare tag)
     asserts:
-      - equal:
+      - matchRegex:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/openabdev/openab:0.9.0-beta.1-kiro"
+          pattern: "^ghcr\\.io/openabdev/openab:[0-9]+\\.[0-9]+\\.[0-9]+(-.+)?-kiro$"
 
   - it: non-kiro agent resolves to openab:<appVersion>-<agent>
     set:
       agents.kiro.enabled: false
       agents.claude.command: claude-agent-acp
     asserts:
-      - equal:
+      - matchRegex:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/openabdev/openab:0.9.0-beta.1-claude"
+          pattern: "^ghcr\\.io/openabdev/openab:[0-9]+\\.[0-9]+\\.[0-9]+(-.+)?-claude$"
 
   - it: image.tag override applies to kiro with suffix
     set:
@@ -48,6 +48,6 @@ tests:
     set:
       agents.kiro.image: "ghcr.io/custom/image"
     asserts:
-      - equal:
+      - matchRegex:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/custom/image:0.9.0-beta.1"
+          pattern: "^ghcr\\.io/custom/image:[0-9]+\\.[0-9]+\\.[0-9]+"

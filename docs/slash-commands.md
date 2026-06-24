@@ -168,6 +168,7 @@ Trigger the backend agent's device-flow authentication. OAB executes the command
 - `OPENAB_AGENT_AUTH_COMMAND` environment variable must be set
 - The auth command must use OAuth device flow (print URL + code to stdout, then block until authorized)
 - No interactive stdin input required (headless-compatible)
+- Must be invoked in a **DM** with the bot (rejected in guild channels/threads for security)
 
 **Timeout:** 15 minutes. If the user doesn't authorize within that window, the process is killed and the user is prompted to run `/auth` again.
 

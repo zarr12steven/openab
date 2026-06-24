@@ -1686,6 +1686,21 @@ impl Handler {
             return;
         }
 
+        // DM-only — auth codes are sensitive; reject if not in a DM channel.
+        let is_dm = matches!(
+            cmd.channel_id.to_channel(&ctx.http).await,
+            Ok(serenity::model::channel::Channel::Private(_))
+        );
+        if !is_dm {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("🔒 `/auth` is only available in DMs for security. Please DM me and run `/auth` there.")
+                    .ephemeral(true),
+            );
+            let _ = cmd.create_response(&ctx.http, response).await;
+            return;
+        }
+
         // Single-flight guard — prevent concurrent /auth invocations.
         static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
@@ -1819,12 +1834,8 @@ impl Handler {
             let output = collected_lines.join("\n");
             let prefix = "🔐 **Agent Authentication**\n```\n";
             let suffix = "\n```\nFollow the instructions above. Waiting for authorization...";
-            let max_output = 2000 - prefix.len() - suffix.len();
-            let truncated = if output.len() > max_output {
-                &output[..max_output]
-            } else {
-                &output
-            };
+            let max_output_chars = 2000 - prefix.chars().count() - suffix.chars().count();
+            let truncated: String = output.chars().take(max_output_chars).collect();
             let msg = format!("{prefix}{truncated}{suffix}");
             let _ = http.create_followup_message(
                 &token,

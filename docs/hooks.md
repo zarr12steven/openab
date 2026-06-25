@@ -18,7 +18,7 @@ hooks.pre_seed → hooks.pre_boot → (agent running) → hooks.pre_shutdown
 
 The `pre_seed` phase runs **before** `pre_boot`. It downloads archives from S3 and extracts them into the agent's home directory (or a custom target). Supported formats: `.zip`, `.tar.gz`, and `.tgz` (auto-detected via magic bytes). This eliminates the need for users to install AWS CLI and write download scripts in `pre_boot`.
 
-> **Feature flag:** requires the `pre-seed` feature (opt-in, not in default).
+> `pre-seed` is enabled by default. No feature flag needed.
 
 ### Configuration
 

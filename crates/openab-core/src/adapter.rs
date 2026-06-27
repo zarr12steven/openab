@@ -813,8 +813,31 @@ impl AdapterRouter {
                         let notification = tokio::select! {
                             msg = rx.recv() => match msg {
                                 Some(n) => n,
-                                // Reader saw EOF and already drained pending; nothing to abandon.
-                                None => break,
+                                // Reader saw EOF: the agent's stdout closed. A *successful*
+                                // turn is always signalled by the id-bearing JSON-RPC response to
+                                // `session/prompt`, which breaks the loop at the id branch below
+                                // *before* any EOF — so reaching this arm means the turn ended
+                                // without a final response, i.e. the agent terminated abnormally
+                                // (bridged agents that crash on a backend error such as HTTP 500 /
+                                // quota exhausted exit without ever emitting an ACP error
+                                // notification). Surface that as an explicit error instead of
+                                // falling through to "_(no response)_" or, worse, presenting a
+                                // partially-streamed buffer as a complete answer.
+                                //
+                                // Do NOT gate on `text_buf.is_empty()`: the buffer is pre-seeded
+                                // on session reset (the expiry notice) and, in send-once mode,
+                                // carries inter-tool narration that is sliced off before delivery —
+                                // so a non-empty buffer is not evidence the turn completed. When
+                                // partial text *was* streamed, `final_content` prepends the warning
+                                // to it (⚠️ … \n\n <partial>), preserving the output while flagging
+                                // the truncation.
+                                None => {
+                                    if response_error.is_none() {
+                                        response_error =
+                                            Some("Agent process exited unexpectedly".into());
+                                    }
+                                    break;
+                                }
                             },
                             _ = tokio::time::sleep(liveness_check_interval) => {
                                 if !conn.alive() {

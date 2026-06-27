@@ -75,9 +75,25 @@ fn load_instructions(path: &str) -> String {
         std::path::PathBuf::from(path)
     };
 
+    // Warn if path is outside $HOME
+    if let Some(home) = std::env::var_os("HOME") {
+        if !expanded.starts_with(std::path::Path::new(&home)) {
+            warn!(path = %expanded.display(), "ambient: instructions_file is outside $HOME");
+        }
+    }
+
     match std::fs::read_to_string(&expanded) {
         Ok(content) => {
+            let char_count = content.chars().count();
             let truncated: String = content.chars().take(INSTRUCTIONS_FILE_MAX_CHARS).collect();
+            if char_count > INSTRUCTIONS_FILE_MAX_CHARS {
+                warn!(
+                    path = %expanded.display(),
+                    original_chars = char_count,
+                    max = INSTRUCTIONS_FILE_MAX_CHARS,
+                    "ambient: instructions file truncated"
+                );
+            }
             info!(path = %expanded.display(), chars = truncated.len(), "ambient: loaded custom instructions");
             truncated
         }
@@ -741,5 +757,38 @@ mod tests {
 
         guard.reset();
         assert!(guard.can_post());
+    }
+
+    #[test]
+    fn load_instructions_file_exists() {
+        let dir = std::env::temp_dir().join("oab_test_ambient");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_instructions.md");
+        std::fs::write(&path, "custom prompt").unwrap();
+
+        let result = super::load_instructions(path.to_str().unwrap());
+        assert_eq!(result, "custom prompt");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_instructions_file_missing_fallback() {
+        let result = super::load_instructions("/tmp/nonexistent_oab_test_file_xyz.md");
+        assert_eq!(result, super::DEFAULT_AMBIENT_SYSTEM_INSTRUCTION);
+    }
+
+    #[test]
+    fn load_instructions_truncates_at_limit() {
+        let dir = std::env::temp_dir().join("oab_test_ambient_trunc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long_instructions.md");
+        let long_content = "x".repeat(3000);
+        std::fs::write(&path, &long_content).unwrap();
+
+        let result = super::load_instructions(path.to_str().unwrap());
+        assert_eq!(result.len(), super::INSTRUCTIONS_FILE_MAX_CHARS);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

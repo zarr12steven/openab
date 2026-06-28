@@ -47,6 +47,7 @@ jobs:
           - { name: codex, agent: "codex-acp" }
           - { name: copilot, agent: "copilot" }
           - { name: cursor, agent: "cursor-agent" }
+          - { name: devin, agent: "devin" }
           - { name: gemini, agent: "gemini" }
           - { name: grok, agent: "grok" }
           - { name: hermes, agent: "hermes-acp" }

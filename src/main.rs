@@ -199,12 +199,12 @@ async fn main() -> anyhow::Result<()> {
         "config loaded"
     );
 
-    if cfg.discord.is_none() && cfg.slack.is_none() && cfg.gateway.is_none() {
-        if !has_unified_platform_env() {
-            anyhow::bail!(
-                "no adapter configured — add [discord], [slack], or [gateway] to config, or set platform env vars (TELEGRAM_BOT_TOKEN, etc.)"
-            );
-        }
+    if cfg.discord.is_none() && cfg.slack.is_none() && cfg.gateway.is_none()
+        && !has_unified_platform_env()
+    {
+        anyhow::bail!(
+            "no adapter configured — add [discord], [slack], or [gateway] to config, or set platform env vars (TELEGRAM_BOT_TOKEN, etc.)"
+        );
     }
 
     // --- pre_seed: download & extract S3 zips before pre_boot ---

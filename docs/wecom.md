@@ -116,9 +116,6 @@ allow_all_channels = true
 allow_all_users = true
 
 [agent]
-command = "claude-agent-acp"
-args = []
-working_dir = "/home/node"
 env = { CLAUDE_CODE_OAUTH_TOKEN = "${OPENAB_AUTH_TOKEN}" }
 
 [pool]

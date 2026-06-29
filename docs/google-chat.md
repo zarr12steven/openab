@@ -150,9 +150,6 @@ allow_all_channels = true
 allow_all_users = true
 
 [agent]
-command = "kiro-cli"
-args = ["acp", "--trust-all-tools"]
-working_dir = "/home/agent"
 ```
 
 ## Features

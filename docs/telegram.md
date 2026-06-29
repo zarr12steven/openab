@@ -177,9 +177,6 @@ bot_username = "your_bot_username"
 # allowed_channels = ["-1001234567890"]  # restrict to specific chat/group IDs
 
 [agent]
-command = "kiro-cli"
-args = ["acp", "--trust-all-tools"]
-working_dir = "/home/agent"
 ```
 
 | Key | Required | Description |

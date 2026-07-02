@@ -135,17 +135,69 @@ async fn apply_ecs(
         format!("oab-control-plane-{account}")
     };
 
-    // Read current generation from S3 manifest (if exists), increment
+    // Read current generation from S3 manifest (if exists), increment.
+    // Also capture whether the *previous* apply had ingress configured, so we
+    // can detect "ingress was removed from the manifest" and tear it down
+    // below — apply only ever provisioned ingress resources before this, so a
+    // manifest edit that drops `spec.ingress` used to orphan the per-bot HTTP
+    // API and Cloud Map service.
     let manifest_key = format!("manifests/{}/{}.yaml", m.metadata.namespace, m.metadata.name);
-    let current_gen = match s3.get_object().bucket(&bucket).key(&manifest_key).send().await {
-        Ok(resp) => {
-            let bytes = resp.body.collect().await?.into_bytes();
-            let existing: OABServiceManifest = serde_yaml::from_slice(&bytes)?;
-            existing.metadata.generation
-        }
-        Err(_) => 0,
-    };
+    let (current_gen, previously_had_ingress) =
+        match s3.get_object().bucket(&bucket).key(&manifest_key).send().await {
+            Ok(resp) => {
+                let bytes = resp.body.collect().await?.into_bytes();
+                let existing: OABServiceManifest = serde_yaml::from_slice(&bytes)?;
+                (existing.metadata.generation, existing.spec.ingress.is_some())
+            }
+            Err(_) => (0, false),
+        };
     let generation = current_gen + 1;
+
+    // Look up the ECS service's current registry ARN(s) up front so both the
+    // ingress-removal teardown below and the update/create logic further down
+    // can use the *exact* registry rather than falling back to a name-only
+    // Cloud Map scan (which can collide across VPCs/environments that share
+    // an account and reuse the same namespace/name).
+    let describe_resp = ecs
+        .describe_services()
+        .cluster("oab")
+        .services(&service_name)
+        .send()
+        .await;
+    let existing_registry_arns: Vec<String> = describe_resp
+        .as_ref()
+        .ok()
+        .and_then(|r| r.services().first())
+        .map(|s| {
+            s.service_registries()
+                .iter()
+                .filter_map(|r| r.registry_arn())
+                .map(|a| a.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let has_registries = !existing_registry_arns.is_empty();
+
+    // If ingress was configured before but is absent now, tear down the
+    // orphaned per-bot ingress resources (best-effort, mirrors `oabctl delete`)
+    // and detach the stale registry from the ECS service itself — omitting
+    // `serviceRegistries` on `UpdateService` leaves the existing configuration
+    // untouched (AWS only clears it when explicitly passed an empty list), so
+    // without this the service would keep pointing at a Cloud Map service that
+    // teardown() is about to delete.
+    if previously_had_ingress && m.spec.ingress.is_none() {
+        eprintln!("  🌐 ingress removed from manifest — tearing down orphaned resources...");
+        if let Err(e) = crate::ingress::teardown(
+            config,
+            &m.metadata.namespace,
+            &m.metadata.name,
+            existing_registry_arns.first().map(|s| s.as_str()),
+        )
+        .await
+        {
+            eprintln!("  ⚠ ingress teardown skipped: {e}");
+        }
+    }
 
     // 1. Upload manifest to S3 (record of desired state)
     let mut manifest_to_store = serde_yaml::to_value(m)?;
@@ -182,13 +234,25 @@ async fn apply_ecs(
         .collect();
 
     // 4. Register task definition
-    let container = ContainerDefinition::builder()
+    let mut container = ContainerDefinition::builder()
         .name("openab")
         .image(&m.spec.image)
         .essential(true)
         .set_environment(Some(env_vars))
-        .set_secrets(if secrets.is_empty() { None } else { Some(secrets) })
-        .build();
+        .set_secrets(if secrets.is_empty() { None } else { Some(secrets) });
+
+    // Ingress needs the container port exposed so ECS can register an SRV record
+    // (Cloud Map + API Gateway learn the target port from it).
+    if let Some(ingress) = &m.spec.ingress {
+        container = container.port_mappings(
+            aws_sdk_ecs::types::PortMapping::builder()
+                .container_port(ingress.container_port as i32)
+                .protocol(aws_sdk_ecs::types::TransportProtocol::Tcp)
+                .build(),
+        );
+    }
+
+    let container = container.build();
 
     let task_def = ecs
         .register_task_definition()
@@ -225,50 +289,157 @@ async fn apply_ecs(
         .awsvpc_configuration(vpc_config)
         .build();
 
-    // Check if service exists
-    let existing = ecs
-        .describe_services()
-        .cluster("oab")
-        .services(&service_name)
-        .send()
-        .await;
+    // Ingress: ensure Cloud Map BEFORE the service exists-check, so the
+    // registry ARN is ready whether the ECS service needs to be created (via
+    // `create_service`) or updated to attach/replace service discovery (via
+    // `update_service` — ECS has supported changing `serviceRegistries` on an
+    // existing service since March 2022; no delete-and-recreate is needed).
+    let cloud_map = if let Some(ingress) = &m.spec.ingress {
+        eprintln!("  🌐 Reconciling ingress (Cloud Map)...");
+        Some(crate::ingress::ensure_cloud_map(config, m, ingress).await?)
+    } else {
+        None
+    };
 
-    let service_active = existing
+    // Check if service exists. Reuses `describe_resp` captured above (before
+    // the ingress-removal teardown) — `ensure_cloud_map` above doesn't touch
+    // the ECS service, so its ACTIVE status can't have changed since then.
+    let service_active = describe_resp
         .as_ref()
         .ok()
         .and_then(|r| r.services().first())
         .is_some_and(|s| s.status() == Some("ACTIVE"));
 
     if service_active {
-        ecs.update_service()
+        // Recreate is NOT required to attach/fix service discovery: ECS's
+        // UpdateService API has supported adding/updating/removing
+        // serviceRegistries since March 2022 (rolling replacement — new tasks
+        // start with the updated registry, old tasks stop once they're
+        // healthy, no downtime gap). It does require the AWSServiceRoleForECS
+        // service-linked role, which ECS creates automatically the first time
+        // any account uses ECS service discovery — no action needed here.
+        let registry_mismatch = cloud_map.as_ref().is_some_and(|cm| {
+            has_registries && !existing_registry_arns.contains(&cm.registry_arn)
+        });
+        // `ingress` was removed from the manifest (cloud_map is None here)
+        // but the ECS service still has a registry attached from a previous
+        // apply — must explicitly detach it. `UpdateService` treats an
+        // *omitted* `serviceRegistries` field as "leave unchanged", not
+        // "clear"; only an explicit empty list detaches it. Without this the
+        // service keeps pointing at the Cloud Map service that the
+        // ingress-removal teardown (above) just deleted.
+        let needs_detach = cloud_map.is_none() && has_registries;
+
+        let mut update_req = ecs
+            .update_service()
             .cluster("oab")
             .service(&service_name)
             .task_definition(&task_def_arn)
-            .network_configuration(network_config)
+            .network_configuration(network_config);
+
+        if let Some(cm) = &cloud_map {
+            if !has_registries || registry_mismatch {
+                let mut registry = aws_sdk_ecs::types::ServiceRegistry::builder()
+                    .registry_arn(&cm.registry_arn);
+                if let Some(ingress) = &m.spec.ingress {
+                    registry = registry
+                        .container_name("openab")
+                        .container_port(ingress.container_port as i32);
+                }
+                update_req = update_req.service_registries(registry.build());
+            }
+        } else if needs_detach {
+            update_req = update_req.set_service_registries(Some(Vec::new()));
+        }
+
+        update_req
             .send()
             .await
             .context("failed to update ECS service")?;
-        println!("  ✓ {} updated", m.metadata.name);
+
+        if cloud_map.is_some() && (!has_registries || registry_mismatch) {
+            if registry_mismatch {
+                println!(
+                    "  ✓ {} updated (service discovery re-pointed to the current Cloud Map service; rolling replacement, no downtime)",
+                    m.metadata.name
+                );
+            } else {
+                println!(
+                    "  ✓ {} updated (service discovery attached; rolling replacement, no downtime)",
+                    m.metadata.name
+                );
+            }
+        } else if needs_detach {
+            println!(
+                "  ✓ {} updated (service discovery detached; rolling replacement, no downtime)",
+                m.metadata.name
+            );
+        } else {
+            println!("  ✓ {} updated", m.metadata.name);
+        }
     } else {
         let cap_strategy = CapacityProviderStrategyItem::builder()
             .capacity_provider(&ecs_rt.capacity_provider)
             .weight(1)
             .build()?;
 
-        ecs.create_service()
+        let mut create_req = ecs
+            .create_service()
             .cluster("oab")
             .service_name(&service_name)
             .task_definition(&task_def_arn)
             .desired_count(1)
             .capacity_provider_strategy(cap_strategy)
-            .network_configuration(network_config)
+            .network_configuration(network_config);
+
+        if let Some(cm) = &cloud_map {
+            let mut registry = aws_sdk_ecs::types::ServiceRegistry::builder()
+                .registry_arn(&cm.registry_arn);
+            // SRV records require the container name + port so ECS registers the
+            // task's port alongside its IP.
+            if let Some(ingress) = &m.spec.ingress {
+                registry = registry
+                    .container_name("openab")
+                    .container_port(ingress.container_port as i32);
+            }
+            create_req = create_req.service_registries(registry.build());
+        }
+
+        create_req
             .send()
             .await
             .context("failed to create ECS service")?;
         println!(
-            "  ✓ {} created ({}, {}cpu/{}mem)",
-            m.metadata.name, ecs_rt.capacity_provider, m.spec.resources.cpu, m.spec.resources.memory
+            "  ✓ {} created ({}, {}cpu/{}mem{})",
+            m.metadata.name,
+            ecs_rt.capacity_provider,
+            m.spec.resources.cpu,
+            m.spec.resources.memory,
+            if cloud_map.is_some() {
+                ", service discovery"
+            } else {
+                ""
+            }
         );
+    }
+
+    // Ingress step 2: VPC Link + API Gateway + routes + SG rule.
+    if let (Some(ingress), Some(cm)) = (&m.spec.ingress, &cloud_map) {
+        eprintln!("  🌐 Reconciling ingress (VPC Link + API Gateway)...");
+        let urls = crate::ingress::ensure_gateway(
+            config,
+            &m.metadata.namespace,
+            &m.metadata.name,
+            ingress,
+            &ecs_rt.networking.subnets,
+            &ecs_rt.networking.security_groups,
+            &cm.registry_arn,
+        )
+        .await?;
+        println!("  🔗 Webhook URL(s) for {}:", m.metadata.name);
+        for u in &urls {
+            println!("     {u}");
+        }
     }
 
     if wait {

@@ -247,7 +247,7 @@ On `apply` this reconciles (idempotently, reused by name):
 1. **Cloud Map** private DNS namespace (`<cloudMapNamespace>-<vpc-id>`, shared per-VPC) + a per-service **SRV** record (carries the container port; a plain A record does not work as a VPC-Link integration target)
 2. **ECS service registry** wiring (attached at service creation)
 3. **VPC Link** (`oab-vpc-link-<vpc-id>`, shared per-VPC), waits until `AVAILABLE`
-4. **API Gateway HTTP API** (`oab-webhook-<ns>-<name>`, one per bot) + `HTTP_PROXY` integration over the VPC Link
+4. **API Gateway HTTP API** (`oab-webhook-<ns>-<name>`, one per bot) + `HTTP_PROXY` integration over the VPC Link, with an `overwrite:path` request parameter mapping so the backend receives the raw path (e.g. `/webhook/telegram`) instead of the stage-prefixed one (e.g. `/prod/webhook/telegram`) — see caveat below
 5. One **route** per path + a `prod` auto-deploy **stage**
 6. A self-referencing **security-group** inbound rule on `containerPort`
 
@@ -268,6 +268,19 @@ LINE console:
 > verifies an HMAC-SHA256 signature using `LINE_CHANNEL_SECRET`. Set
 > `TELEGRAM_SECRET_TOKEN` when registering the webhook with BotFather to enable
 > that check.
+>
+> **Stage prefix stripped before it reaches the backend:** for private
+> (VPC_LINK) integrations, API Gateway forwards the *stage-prefixed* request
+> path to the backend by default (e.g. `/prod/webhook/telegram`, not
+> `/webhook/telegram`) — [documented AWS
+> behavior](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-private.html).
+> OpenAB's webhook router matches the exact configured path, so without
+> stripping the prefix every request 404s at the container despite the
+> integration and Cloud Map wiring being otherwise correct. `apply` sets an
+> `overwrite:path=$request.path` request parameter on the integration to strip
+> it, and self-heals existing integrations created before this fix by patching
+> the parameter in on the next `apply` — no manual intervention or recreate
+> needed.
 >
 > **Adding/fixing service discovery never requires recreating the service:**
 > if an existing ECS service has no Cloud Map registry, or has one pointing at a

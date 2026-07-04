@@ -28,6 +28,7 @@ use crate::manifest::{Ingress, OABServiceManifest};
 use anyhow::{Context, Result};
 use aws_sdk_apigatewayv2::types::{ConnectionType, IntegrationType, ProtocolType};
 use aws_sdk_servicediscovery::types::{DnsConfig, DnsRecord, RecordType};
+use std::collections::HashMap;
 
 const STAGE_NAME: &str = "prod";
 
@@ -141,6 +142,19 @@ pub async fn ensure_gateway(
 /// API Gateway route key for a webhook path (POST only).
 fn route_key(path: &str) -> String {
     format!("POST {path}")
+}
+
+/// Whether an integration's request parameters already carry the
+/// `overwrite:path` override needed to strip the stage prefix before it
+/// reaches the backend. Without this, private (VPC_LINK) integrations
+/// forward the stage-prefixed path (e.g. `/prod/webhook/telegram`) to the
+/// container, and openab's exact-match router 404s on it. See:
+/// <https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-private.html>
+fn has_stage_path_override(request_parameters: Option<&HashMap<String, String>>) -> bool {
+    request_parameters
+        .and_then(|p| p.get("overwrite:path"))
+        .map(|v| v == "$request.path")
+        .unwrap_or(false)
 }
 
 /// Extract the Cloud Map service ID from its ARN
@@ -733,7 +747,23 @@ async fn ensure_integration(
                     .integration_id()
                     .context("integration missing id")?
                     .to_string();
-                eprintln!("  ✓ Integration exists → {integration_uri}");
+                if has_stage_path_override(i.request_parameters()) {
+                    eprintln!("  ✓ Integration exists → {integration_uri}");
+                } else {
+                    // Self-heal: existing integrations created before this
+                    // fix forward the stage-prefixed path to the backend,
+                    // causing every request to 404. Patch in the override.
+                    eprintln!(
+                        "  ↻ Integration exists but missing path override → {integration_uri}, patching"
+                    );
+                    api.update_integration()
+                        .api_id(api_id)
+                        .integration_id(&id)
+                        .request_parameters("overwrite:path", "$request.path")
+                        .send()
+                        .await
+                        .context("failed to patch integration path override")?;
+                }
                 return Ok(id);
             }
         }
@@ -743,6 +773,13 @@ async fn ensure_integration(
         }
     }
     eprintln!("  ⊕ Creating integration → {integration_uri}");
+    // For private (VPC_LINK) integrations, API Gateway forwards the stage
+    // portion of the request path to the backend by default (e.g.
+    // `/prod/webhook/telegram` instead of `/webhook/telegram`), per AWS docs:
+    // https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-private.html
+    // openab's router matches the exact configured path, so without this
+    // override every request 404s at the backend. Overwrite the forwarded
+    // path with $request.path (stage-stripped) to match.
     let out = api
         .create_integration()
         .api_id(api_id)
@@ -752,6 +789,7 @@ async fn ensure_integration(
         .connection_type(ConnectionType::VpcLink)
         .connection_id(vpc_link_id)
         .payload_format_version("1.0")
+        .request_parameters("overwrite:path", "$request.path")
         .send()
         .await
         .context("failed to create integration")?;
@@ -880,6 +918,31 @@ mod tests {
     fn route_key_is_post_prefixed() {
         assert_eq!(route_key("/webhook/telegram"), "POST /webhook/telegram");
         assert_eq!(route_key("/webhook/line"), "POST /webhook/line");
+    }
+
+    #[test]
+    fn stage_path_override_absent_when_no_request_parameters() {
+        // Integrations created before this fix have no RequestParameters at
+        // all, so they must be detected as needing the self-heal patch.
+        assert!(!has_stage_path_override(None));
+    }
+
+    #[test]
+    fn stage_path_override_absent_when_other_params_present() {
+        let params = HashMap::from([("someOtherKey".to_string(), "value".to_string())]);
+        assert!(!has_stage_path_override(Some(&params)));
+    }
+
+    #[test]
+    fn stage_path_override_absent_when_value_wrong() {
+        let params = HashMap::from([("overwrite:path".to_string(), "/literal/path".to_string())]);
+        assert!(!has_stage_path_override(Some(&params)));
+    }
+
+    #[test]
+    fn stage_path_override_present_when_correctly_set() {
+        let params = HashMap::from([("overwrite:path".to_string(), "$request.path".to_string())]);
+        assert!(has_stage_path_override(Some(&params)));
     }
 
     #[test]

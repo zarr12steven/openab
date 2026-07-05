@@ -345,7 +345,8 @@ must still be registered manually in the LINE Developers console.
 > loudly on a mismatch (subnets aren't exposed by the API, so those can only be
 > reminded, not verified).
 >
-> **Teardown:** `oabctl delete oabservice <name>` permanently removes the bot's
+> **Teardown:** `oabctl delete oabservice <name>` (or `oabctl delete -f <manifest>`,
+> using the same file `apply -f` deployed it from) permanently removes the bot's
 > per-bot ingress resources — its exact Cloud Map service (resolved by the ECS
 > service's own registry ARN, not a name search, so same-named bots in different
 > VPCs/environments can't collide) and its HTTP API (`oab-webhook-<ns>-<name>`,
@@ -525,6 +526,7 @@ s3://oab-control-plane-{account}/
 | `oabctl apply -f <file> --no-sync` | Deploy without syncing config |
 | `oabctl get oabservice [name]` | List agents and status |
 | `oabctl delete oabservice <name>` | Teardown agent |
+| `oabctl delete -f <file\|dir>` | Teardown every agent defined in a manifest (mirrors `apply -f`) |
 | `oabctl exec <agent> -- <cmd>` | Execute command in container |
 | `oabctl cp <src> <dst>` | Copy files to/from container |
 | `oabctl sync <src> <dst>` | Sync directories (bidirectional) |

@@ -98,7 +98,7 @@ pub async fn run(aws_config: &aws_config::SdkConfig, file_path: &str, sync_confi
     Ok(())
 }
 
-fn load_manifests(path: &Path) -> Result<Vec<OABServiceManifest>> {
+pub(crate) fn load_manifests(path: &Path) -> Result<Vec<OABServiceManifest>> {
     let mut manifests = Vec::new();
     if path.is_dir() {
         for entry in std::fs::read_dir(path)? {
@@ -414,7 +414,8 @@ async fn apply_ecs(
     // existing service since March 2022; no delete-and-recreate is needed).
     let cloud_map = if let Some(ingress) = &m.spec.ingress {
         eprintln!("  🌐 Reconciling ingress (Cloud Map)...");
-        Some(crate::ingress::ensure_cloud_map(config, m, ingress).await?)
+        let cm = crate::ingress::ensure_cloud_map(config, m, ingress).await?;
+        Some(cm)
     } else {
         None
     };
@@ -584,22 +585,71 @@ async fn apply_ecs(
     Ok(())
 }
 
+/// Poll until the ECS service's deployment stabilizes, printing each
+/// transition as a composite status string — same vocabulary `ecsctl`
+/// itself uses for `get`/`alias ls` (github.com/oablab/ecsctl,
+/// src/alias.rs): `RUNNING`, `REPLACING(n→m)` (new deployment's tasks still
+/// coming up), `DRAINING(n+m)` (new deployment up, old one's tasks still
+/// stopping), `PENDING(n)`, `PARTIAL(n/m)`, or the raw ECS service status as
+/// a fallback — reused here for a consistent status vocabulary across both
+/// tools instead of raw `running_count`/`rollout_state` fields.
 async fn wait_for_stable(ecs: &aws_sdk_ecs::Client, cluster: &str, service: &str) -> Result<()> {
-    for _ in 0..60 {
+    for i in 0..60 {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         let resp = ecs.describe_services()
             .cluster(cluster)
             .services(service)
             .send().await?;
-        if let Some(svc) = resp.services().first() {
-            let deployments = svc.deployments();
-            if deployments.len() == 1 {
-                if let Some(d) = deployments.first() {
-                    if d.running_count() == d.desired_count() && d.rollout_state() == Some(&aws_sdk_ecs::types::DeploymentRolloutState::Completed) {
-                        return Ok(());
-                    }
+        let elapsed = (i + 1) * 5;
+
+        let Some(svc) = resp.services().first() else {
+            eprintln!("    [{elapsed}s] service not found in describe-services response yet");
+            continue;
+        };
+
+        let running = svc.running_count() as usize;
+        let desired = svc.desired_count() as usize;
+        let pending = svc.pending_count() as usize;
+        let deployments = svc.deployments();
+        let num_deployments = deployments.len();
+        let primary = deployments
+            .iter()
+            .find(|d| d.status().unwrap_or_default() == "PRIMARY")
+            .or_else(|| deployments.first());
+
+        let status = if desired == 0 {
+            "STOPPED".to_string()
+        } else if running == desired && pending == 0 && num_deployments <= 1 {
+            "RUNNING".to_string()
+        } else if num_deployments > 1 {
+            if let Some(p) = primary {
+                let p_running = p.running_count() as usize;
+                let p_desired = p.desired_count() as usize;
+                if p_running < p_desired {
+                    format!("REPLACING({p_running}→{p_desired})")
+                } else {
+                    let old_running: usize = deployments
+                        .iter()
+                        .filter(|d| d.status().unwrap_or_default() != "PRIMARY")
+                        .map(|d| d.running_count() as usize)
+                        .sum();
+                    format!("DRAINING({p_running}+{old_running})")
                 }
+            } else {
+                svc.status().unwrap_or("UNKNOWN").to_string()
             }
+        } else if pending > 0 {
+            format!("PENDING({pending})")
+        } else if running < desired {
+            format!("PARTIAL({running}/{desired})")
+        } else {
+            svc.status().unwrap_or("UNKNOWN").to_string()
+        };
+
+        eprintln!("    [{elapsed}s] {status}");
+
+        if status == "RUNNING" {
+            return Ok(());
         }
     }
     anyhow::bail!("timed out waiting for service to stabilize (5 min)")

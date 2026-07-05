@@ -1,4 +1,40 @@
 use anyhow::{Context, Result};
+use std::path::Path;
+
+/// Delete every OABService defined in a manifest file or directory (mirrors
+/// `apply -f`). Each manifest's `metadata.name`/`metadata.namespace` are used
+/// directly — there's no `--cluster` override here because `apply` itself
+/// only ever deploys to the hardcoded `"oab"` cluster (manifests don't carry
+/// a cluster field), so deletion targets the same cluster unconditionally.
+/// An `OABFleet` manifest expands to multiple services, all deleted in turn.
+///
+/// Continues past a failed delete instead of stopping at the first one, so
+/// one broken/already-gone service in a fleet doesn't block cleanup of the
+/// rest — but still returns an error at the end if anything failed.
+pub async fn run_from_file(aws_config: &aws_config::SdkConfig, file_path: &str) -> Result<()> {
+    let path = Path::new(file_path);
+    let manifests = crate::apply::load_manifests(path)
+        .with_context(|| format!("failed to load manifest(s) from {file_path}"))?;
+
+    if manifests.is_empty() {
+        anyhow::bail!("no manifests found at {}", file_path);
+    }
+
+    let mut failures = Vec::new();
+    for m in &manifests {
+        println!("Deleting {} (from {})...", m.metadata.name, file_path);
+        if let Err(e) = run(aws_config, "oabservice", &m.metadata.name, "oab", &m.metadata.namespace).await {
+            eprintln!("  ⚠ failed to delete {}: {e}", m.metadata.name);
+            failures.push(m.metadata.name.clone());
+        }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!("failed to delete {} of {} service(s): {}", failures.len(), manifests.len(), failures.join(", "));
+    }
+    Ok(())
+}
+
 
 pub async fn run(
     aws_config: &aws_config::SdkConfig,

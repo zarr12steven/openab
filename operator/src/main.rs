@@ -66,7 +66,7 @@ enum Commands {
         /// ECS cluster name (default: from ~/.oabctl/config.toml; ignored when using -f)
         #[arg(long)]
         cluster: Option<String>,
-        /// Namespace (ignored when using -f — read from each manifest instead)
+        /// Namespace (default: from ~/.oabctl/config.toml; ignored when using -f)
         #[arg(long)]
         namespace: Option<String>,
     },

@@ -543,14 +543,15 @@ async fn apply_ecs(
         // Match on the typed error code (InvalidParameterException) rather than
         // raw message text to be resilient to SDK/API wording changes.
         use aws_sdk_ecs::error::ProvideErrorMetadata;
-        let mut last_err = None;
-        for attempt in 0..12 {
+        const DRAIN_RETRY_ATTEMPTS: u32 = 12;
+        const DRAIN_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        for attempt in 0..DRAIN_RETRY_ATTEMPTS {
             match create_req.clone().send().await {
                 Ok(_) => {
                     if attempt > 0 {
                         eprintln!(" ok");
                     }
-                    last_err = None;
                     break;
                 }
                 Err(e) => {
@@ -559,28 +560,27 @@ async fn apply_ecs(
                             .unwrap_or_default()
                             .to_lowercase()
                             .contains("draining");
-                    if is_draining {
+                    let is_last = attempt == DRAIN_RETRY_ATTEMPTS - 1;
+                    if is_draining && !is_last {
                         if attempt == 0 {
                             eprint!("  ⏳ Service still draining, retrying...");
                         } else {
                             eprint!(".");
                         }
-                        last_err = Some(e);
-                        if attempt < 11 {
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        }
+                        tokio::time::sleep(DRAIN_RETRY_INTERVAL).await;
                     } else {
                         if attempt > 0 {
                             eprintln!(" failed");
                         }
-                        return Err(e).context("failed to create ECS service");
+                        let ctx = if is_last && is_draining {
+                            "failed to create ECS service after retries (service still draining)"
+                        } else {
+                            "failed to create ECS service"
+                        };
+                        return Err(e).context(ctx);
                     }
                 }
             }
-        }
-        if let Some(e) = last_err {
-            eprintln!(" timed out");
-            return Err(anyhow::anyhow!(e)).context("failed to create ECS service after retries");
         }
         println!(
             "  ✓ {} created ({}, {}cpu/{}mem{})",

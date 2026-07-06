@@ -218,9 +218,10 @@ impl ChatAdapter for UnifiedGatewayAdapter {
         false
     }
 
-    fn renders_native_tables(&self) -> bool {
+    fn renders_native_tables(&self, platform: &str) -> bool {
         // Telegram Rich Messages render markdown tables natively — skip the
         // table→code-block pre-pass so tables display with proper formatting.
-        self.gw_state.telegram_rich_messages
+        // Only applies to Telegram; other platforms in unified mode keep wrapping.
+        platform == "telegram" && self.gw_state.telegram_rich_messages
     }
 }

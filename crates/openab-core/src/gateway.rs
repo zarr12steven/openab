@@ -233,6 +233,7 @@ pub struct GatewayAdapter {
     platform_name: &'static str,
     streaming: bool,
     streaming_placeholder: bool,
+    telegram_rich_messages: bool,
 }
 
 impl GatewayAdapter {
@@ -242,6 +243,7 @@ impl GatewayAdapter {
         platform_name: &'static str,
         streaming: bool,
         streaming_placeholder: bool,
+        telegram_rich_messages: bool,
     ) -> Self {
         Self {
             ws_tx,
@@ -249,6 +251,7 @@ impl GatewayAdapter {
             platform_name,
             streaming,
             streaming_placeholder,
+            telegram_rich_messages,
         }
     }
 
@@ -731,10 +734,11 @@ impl ChatAdapter for GatewayAdapter {
         self.streaming_placeholder
     }
 
-    fn renders_native_tables(&self) -> bool {
+    fn renders_native_tables(&self, _platform: &str) -> bool {
         // Telegram renders markdown tables natively via Rich Messages;
-        // skip the table→code-block pre-pass for that platform.
-        self.platform_name == "telegram"
+        // skip the table→code-block pre-pass for that platform only when
+        // Rich Messages is confirmed enabled.
+        self.platform_name == "telegram" && self.telegram_rich_messages
     }
 }
 
@@ -754,6 +758,7 @@ pub struct GatewayParams {
     pub trusted_bot_ids: Vec<String>,
     pub streaming: bool,
     pub streaming_placeholder: bool,
+    pub telegram_rich_messages: bool,
     pub stt: crate::config::SttConfig,
 }
 
@@ -788,6 +793,7 @@ pub async fn run_gateway_adapter(
         params.streaming
     };
     let streaming_placeholder = params.streaming_placeholder;
+    let telegram_rich_messages = params.telegram_rich_messages;
     let stt_config = params.stt;
 
     let connect_url = match &params.token {
@@ -838,6 +844,7 @@ pub async fn run_gateway_adapter(
             platform,
             streaming,
             streaming_placeholder,
+            telegram_rich_messages,
         ));
         let slash_ws_tx = ws_tx.clone(); // for fire-and-forget slash command responses
         let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();

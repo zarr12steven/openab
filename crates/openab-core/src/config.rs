@@ -567,6 +567,11 @@ pub struct GatewayConfig {
     /// Show "…" placeholder at streaming start. Default: true. Set false for platforms using drafts.
     #[serde(default = "default_true")]
     pub streaming_placeholder: bool,
+    /// Whether the connected gateway renders tables natively (e.g. Telegram Rich Messages).
+    /// Default: true (matches Telegram default). Set false if Rich Messages is disabled
+    /// on the gateway daemon to preserve table code-block wrapping.
+    #[serde(default = "default_true")]
+    pub telegram_rich_messages: bool,
     /// Message dispatch mode. Default: per-message.
     #[serde(default)]
     pub message_processing_mode: MessageProcessingMode,

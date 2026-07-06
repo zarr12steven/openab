@@ -587,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
             trusted_bot_ids: gw_cfg.trusted_bot_ids,
             streaming: gw_cfg.streaming,
             streaming_placeholder: gw_cfg.streaming_placeholder,
+            telegram_rich_messages: gw_cfg.telegram_rich_messages,
             stt: cfg.stt.clone(),
         };
         let gw_router = router.clone();

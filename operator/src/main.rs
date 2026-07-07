@@ -49,9 +49,9 @@ enum Commands {
         resource: String,
         /// Optional resource name
         name: Option<String>,
-        /// ECS cluster name
-        #[arg(long, default_value = "default")]
-        cluster: String,
+        /// ECS cluster name (default: from ~/.oabctl/config.toml)
+        #[arg(long)]
+        cluster: Option<String>,
     },
     /// Delete an OAB service
     Delete {
@@ -63,13 +63,12 @@ enum Commands {
         /// instead of specifying <resource> <name> directly (mirrors `apply -f`)
         #[arg(short, long, conflicts_with_all = ["resource", "name"])]
         file: Option<String>,
-        /// ECS cluster name (ignored when using -f — manifests are always
-        /// deployed to the "oab" cluster, same as `apply`)
-        #[arg(long, default_value = "default")]
-        cluster: String,
-        /// Namespace (ignored when using -f — read from each manifest instead)
-        #[arg(long, default_value = "prod")]
-        namespace: String,
+        /// ECS cluster name (default: from ~/.oabctl/config.toml; ignored when using -f)
+        #[arg(long)]
+        cluster: Option<String>,
+        /// Namespace (default: from ~/.oabctl/config.toml; ignored when using -f)
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Execute a command in an agent container (via ecsctl)
     Exec {
@@ -133,13 +132,20 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Apply { file, no_sync, wait } => apply::run(&config, &file, !no_sync, wait).await,
         Commands::Create { name, namespace, auto_apply } => create::run(&config, &name, &namespace, auto_apply).await,
-        Commands::Get { resource, name, cluster } => get::run(&config, &resource, name.as_deref(), &cluster).await,
+        Commands::Get { resource, name, cluster } => {
+            let oab_cfg = config::OabConfig::load().context("failed to load ~/.oabctl/config.toml")?;
+            let cluster = cluster.unwrap_or(oab_cfg.defaults.cluster);
+            get::run(&config, &resource, name.as_deref(), &cluster).await
+        }
         Commands::Delete { resource, name, file, cluster, namespace } => {
             if let Some(file) = file {
                 delete::run_from_file(&config, &file).await
             } else {
                 let resource = resource.context("<RESOURCE> is required when not using -f")?;
                 let name = name.context("<NAME> is required when not using -f")?;
+                let oab_cfg = config::OabConfig::load().context("failed to load ~/.oabctl/config.toml")?;
+                let cluster = cluster.unwrap_or(oab_cfg.defaults.cluster);
+                let namespace = namespace.unwrap_or(oab_cfg.defaults.namespace);
                 delete::run(&config, &resource, &name, &cluster, &namespace).await
             }
         }

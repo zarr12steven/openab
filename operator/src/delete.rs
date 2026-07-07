@@ -91,8 +91,11 @@ pub async fn run(
     // 2a. Wait for the service to fully drain (INACTIVE status) so that
     // a subsequent `apply` doesn't hit "Unable to Start a service that
     // is still Draining".
+    const DRAIN_POLL_ATTEMPTS: u32 = 12;
+    const DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
     eprint!("  ⏳ Waiting for drain to complete...");
-    for i in 0..12 {
+    for i in 0..DRAIN_POLL_ATTEMPTS {
         // Check status first, then sleep — avoids an unnecessary initial delay
         // when the service transitions quickly.
         let resp = ecs
@@ -116,16 +119,16 @@ pub async fn run(
             if i == 0 {
                 eprintln!(" done (immediate)");
             } else {
-                let elapsed = i * 5;
+                let elapsed = u64::from(i) * DRAIN_POLL_INTERVAL.as_secs();
                 eprintln!(" done ({elapsed}s)");
             }
             break;
         }
-        if i == 11 {
+        if i == DRAIN_POLL_ATTEMPTS - 1 {
             eprintln!(" timed out (service may still be draining)");
         } else {
             eprint!(".");
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(DRAIN_POLL_INTERVAL).await;
         }
     }
 

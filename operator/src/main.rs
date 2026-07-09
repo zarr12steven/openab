@@ -95,7 +95,7 @@ enum Commands {
     },
     /// Scale an OAB service (set desired task count)
     Scale {
-        /// Agent name or ecsctl alias
+        /// Agent name (OAB service)
         alias: String,
         /// Desired task count (0 or 1)
         #[arg(value_parser = clap::value_parser!(i32).range(0..=1))]

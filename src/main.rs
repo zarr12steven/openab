@@ -129,6 +129,62 @@ fn has_unified_platform_env() -> bool {
                 .unwrap_or(false))
 }
 
+/// Apply a platform's first-class trust section to the registry, or — when the
+/// platform is active but still trust-driven by the deprecated uniform
+/// `GATEWAY_ALLOW_ALL_USERS`/`GATEWAY_ALLOWED_USERS` env — log the Phase 1
+/// deprecation warning (#1356). Shared by the `[wecom]`/`[googlechat]`/`[teams]`
+/// overrides; same override shape as the bespoke `[telegram]`/`[line]` blocks.
+///
+/// L2 (channels) stays on the shared gateway values passed in; L3 mirrors the
+/// resolved section (config → `{env_prefix}_*` env → deny-all).
+#[allow(clippy::too_many_arguments)]
+fn platform_trust_override(
+    reg: &mut openab_core::trust::PlatformTrustConfigs,
+    platform: &str,
+    section: &Option<config::PlatformTrustConfig>,
+    env_prefix: &str,
+    platform_active: bool,
+    allow_all_channels: bool,
+    allowed_channels: &[String],
+) {
+    use openab_core::trust::TrustConfig;
+    let resolved = if let Some(s) = section {
+        Some(s.resolve_with_env(env_prefix))
+    } else if config::PlatformTrustConfig::env_trust_present(env_prefix) {
+        Some(config::PlatformTrustConfig::default().resolve_with_env(env_prefix))
+    } else {
+        None
+    };
+    match resolved {
+        Some(r) => {
+            reg.insert(
+                platform,
+                TrustConfig::new(
+                    Some(allow_all_channels),
+                    allowed_channels.to_vec(),
+                    None,
+                    Some(r.allow_all_users),
+                    r.allowed_users,
+                ),
+            );
+        }
+        None => {
+            let legacy_env_set = std::env::var("GATEWAY_ALLOW_ALL_USERS").is_ok()
+                || std::env::var("GATEWAY_ALLOWED_USERS").is_ok();
+            if platform_active && legacy_env_set {
+                warn!(
+                    platform,
+                    "platform trust is driven by deprecated GATEWAY_ALLOW_ALL_USERS/\
+                     GATEWAY_ALLOWED_USERS env vars — migrate to a [{platform}] section \
+                     (allow_all_users/allowed_users) or {env_prefix}_ALLOW_ALL_USERS/\
+                     {env_prefix}_ALLOWED_USERS; the uniform GATEWAY_* fallback will \
+                     become a startup error in Phase 2 (#1356)"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -401,6 +457,11 @@ async fn main() -> anyhow::Result<()> {
         // gateway model yet (group policy is a follow-up), so it stays on the
         // shared GATEWAY_* values set above.
         //
+        // NOTE: deliberately NOT routed through platform_trust_override —
+        // LineConfig is a bespoke type that grows group-policy fields next
+        // (#1355 follow-up), unlike the shared PlatformTrustConfig used by
+        // wecom/googlechat/teams below.
+        //
         // Also resolves when running env-only (no [line] section but
         // LINE_ALLOW_ALL_USERS / LINE_ALLOWED_USERS set), matching the
         // Telegram pattern.
@@ -444,6 +505,41 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+
+        // WeCom / Google Chat / MS Teams: same first-class override shape as
+        // LINE above, via the shared [wecom]/[googlechat]/[teams] trust
+        // sections (#1358, #1359, #1360). L2 stays on the shared GATEWAY_*
+        // channel values; L3 mirrors the resolved per-platform section.
+        platform_trust_override(
+            &mut reg,
+            "wecom",
+            &cfg.wecom,
+            "WECOM",
+            cfg!(feature = "wecom") && std::env::var("WECOM_CORP_ID").is_ok(),
+            allow_all_channels,
+            &allowed_channels,
+        );
+        platform_trust_override(
+            &mut reg,
+            "googlechat",
+            &cfg.googlechat,
+            "GOOGLE_CHAT",
+            cfg!(feature = "googlechat")
+                && std::env::var("GOOGLE_CHAT_ENABLED")
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false),
+            allow_all_channels,
+            &allowed_channels,
+        );
+        platform_trust_override(
+            &mut reg,
+            "teams",
+            &cfg.teams,
+            "TEAMS",
+            cfg!(feature = "teams") && std::env::var("TEAMS_APP_ID").is_ok(),
+            allow_all_channels,
+            &allowed_channels,
+        );
         reg
     };
 

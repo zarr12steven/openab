@@ -129,6 +129,22 @@ max_sessions = 10
 | `allow_all_channels` | No | Allow messages from all channels (default: `false`) |
 | `allow_all_users` | No | Allow messages from all users (default: `false`) |
 
+### User Trust (`[wecom]` section)
+
+> **Mode scoping:** the `[wecom]` section applies when the WeCom adapter is **embedded in the OAB binary** (unified mode, `WECOM_CORP_ID` env set on the OAB container). In the standalone-gateway mode shown above, trust is enforced by `[gateway].allow_all_users` / `allowed_users` instead — the `[wecom]` section has no effect on that path yet (Phase 1c consolidates the two).
+
+Identity trust defaults to **deny-all** (identity-trust-none ADR): unknown senders are rejected until explicitly admitted. Configure trust with a first-class `[wecom]` section:
+
+```toml
+[wecom]
+allowed_users = ["zhangsan", "lisi"]  # WeCom UserIDs (tenant-assigned, freeform strings)
+# allow_all_users = true   # explicit opt-in only — any user can drive the agent
+```
+
+Each field falls back to its `WECOM_ALLOW_ALL_USERS` / `WECOM_ALLOWED_USERS` env var when unset.
+
+> ⚠️ **Deprecated:** driving WeCom trust through the uniform `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` env vars still works but logs a startup warning; it will become a startup error in a later phase. Migrate to `[wecom]` (or `WECOM_*` env vars).
+
 ## 6. Expose the Gateway (HTTPS)
 
 WeCom requires a publicly accessible HTTPS URL for callbacks.

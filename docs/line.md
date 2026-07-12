@@ -104,6 +104,8 @@ platform = "line"
 
 ### User Trust (`[line]` section)
 
+> **Mode scoping:** the `[line]` section applies when the LINE adapter is **embedded in the OAB binary** (unified mode, `LINE_CHANNEL_SECRET` env set on the OAB container). In the standalone-gateway mode shown above, trust is enforced by `[gateway].allow_all_users` / `allowed_users` instead — the `[line]` section has no effect on that path yet (Phase 1c consolidates the two).
+
 Identity trust defaults to **deny-all** (identity-trust-none ADR): unknown senders are rejected until explicitly admitted. Configure trust with a first-class `[line]` section:
 
 ```toml

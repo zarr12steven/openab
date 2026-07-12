@@ -173,6 +173,9 @@ pub struct Config {
     pub gateway: Option<GatewayConfig>,
     pub telegram: Option<TelegramConfig>,
     pub line: Option<LineConfig>,
+    pub wecom: Option<PlatformTrustConfig>,
+    pub googlechat: Option<PlatformTrustConfig>,
+    pub teams: Option<PlatformTrustConfig>,
     pub agentcore: Option<AgentCoreConfig>,
     #[serde(default)]
     pub agent: AgentConfig,
@@ -830,6 +833,76 @@ impl LineConfig {
     /// uniform `GATEWAY_*` seed (and to warn when it does).
     pub fn env_trust_present() -> bool {
         std::env::var("LINE_ALLOW_ALL_USERS").is_ok() || std::env::var("LINE_ALLOWED_USERS").is_ok()
+    }
+}
+
+/// Shared first-class trust section for gateway platforms whose Phase 1 needs
+/// exactly the two L3 identity fields (identity-trust-none ADR): `[wecom]`,
+/// `[googlechat]`, `[teams]`. Same shape and resolution order as
+/// [`LineConfig`] / [`TelegramConfig`]: `[section].field` (with `${}`
+/// expansion) → `{PREFIX}_*` env var → deny-all default.
+///
+/// Trust-only by design — platform credentials stay on the gateway env vars
+/// the webhook adapters read (`WECOM_CORP_ID`/`WECOM_SECRET`,
+/// `GOOGLE_CHAT_*`, `TEAMS_APP_ID`/`TEAMS_APP_SECRET`). Platforms that later
+/// need extra trust fields (e.g. `trusted_bot_ids`) graduate to their own
+/// struct, as LINE will for group policy.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PlatformTrustConfig {
+    /// Explicit flag: true = allow all users, false = check `allowed_users`.
+    /// When not set, defaults to `false` (deny-all, per identity-trust-none ADR).
+    /// Env fallback: `{PREFIX}_ALLOW_ALL_USERS` (empty string treated as unset).
+    ///
+    /// **Note:** When this resolves to `true`, the `allowed_users` list is
+    /// bypassed entirely — all users are permitted regardless of list contents.
+    pub allow_all_users: Option<bool>,
+    /// Platform user IDs allowed to interact with the bot. Only checked when
+    /// `allow_all_users` resolves to `false`. Env fallback:
+    /// `{PREFIX}_ALLOWED_USERS` (comma-separated).
+    /// `None` = not set (fall back to env); `Some([])` = explicit empty (deny all).
+    pub allowed_users: Option<Vec<String>>,
+}
+
+/// Fully resolved platform trust settings (config → env → default applied).
+#[derive(Debug, Clone)]
+pub struct ResolvedPlatformTrust {
+    pub allow_all_users: bool,
+    pub allowed_users: Vec<String>,
+}
+
+impl PlatformTrustConfig {
+    /// Resolve both fields against `{prefix}_ALLOW_ALL_USERS` /
+    /// `{prefix}_ALLOWED_USERS` env fallbacks (e.g. prefix `"WECOM"`,
+    /// `"GOOGLE_CHAT"`, `"TEAMS"`).
+    pub fn resolve_with_env(&self, prefix: &str) -> ResolvedPlatformTrust {
+        let allowed_users: Vec<String> = match &self.allowed_users {
+            Some(list) => list.clone(),
+            None => std::env::var(format!("{prefix}_ALLOWED_USERS"))
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        };
+        ResolvedPlatformTrust {
+            allow_all_users: self.allow_all_users.unwrap_or_else(|| {
+                std::env::var(format!("{prefix}_ALLOW_ALL_USERS"))
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(false)
+            }),
+            allowed_users,
+        }
+    }
+
+    /// Whether first-class trust env vars exist for `prefix` — used by the
+    /// binary to decide whether the platform's trust still rides on the
+    /// deprecated uniform `GATEWAY_*` seed (and to warn when it does).
+    pub fn env_trust_present(prefix: &str) -> bool {
+        std::env::var(format!("{prefix}_ALLOW_ALL_USERS")).is_ok()
+            || std::env::var(format!("{prefix}_ALLOWED_USERS")).is_ok()
     }
 }
 
@@ -1985,6 +2058,126 @@ allowed_users = ["U1234567890abcdef0123456789abcdef"]
 
         std::env::remove_var("LINE_ALLOW_ALL_USERS");
         std::env::remove_var("LINE_ALLOWED_USERS");
+    }
+
+    #[test]
+    fn platform_trust_sections_parse_from_toml() {
+        let toml_str = r#"
+[discord]
+bot_token = "x"
+
+[wecom]
+allowed_users = ["zhangsan", "lisi"]
+
+[googlechat]
+allowed_users = ["users/123456789"]
+
+[teams]
+allow_all_users = true
+"#;
+        let cfg = parse_config_str(toml_str, "test").unwrap();
+        let wecom = cfg.wecom.expect("wecom section");
+        assert_eq!(
+            wecom.allowed_users.as_deref(),
+            Some(&["zhangsan".to_string(), "lisi".to_string()][..])
+        );
+        assert_eq!(wecom.allow_all_users, None);
+        let gc = cfg.googlechat.expect("googlechat section");
+        assert_eq!(
+            gc.allowed_users.as_deref(),
+            Some(&["users/123456789".to_string()][..])
+        );
+        let teams = cfg.teams.expect("teams section");
+        assert_eq!(teams.allow_all_users, Some(true));
+
+        // Absent sections → None (trust falls back to legacy GATEWAY_* seed).
+        let cfg = parse_config_str("[discord]\nbot_token = \"x\"\n", "test").unwrap();
+        assert!(cfg.wecom.is_none());
+        assert!(cfg.googlechat.is_none());
+        assert!(cfg.teams.is_none());
+    }
+
+    /// All `WECOM_*` env scenarios in ONE test — std::env is process-global and
+    /// cargo runs tests in parallel (same pattern as
+    /// `line_resolve_all_scenarios`). The WECOM prefix stands in for all
+    /// `PlatformTrustConfig` users; the prefix is a plain format argument, so
+    /// GOOGLE_CHAT/TEAMS behave identically by construction.
+    #[test]
+    fn platform_trust_resolve_all_scenarios() {
+        // --- Scenario 1: defaults — deny-all per identity-trust-none ADR ---
+        std::env::remove_var("WECOM_ALLOW_ALL_USERS");
+        std::env::remove_var("WECOM_ALLOWED_USERS");
+        let r = PlatformTrustConfig::default().resolve_with_env("WECOM");
+        assert!(!r.allow_all_users);
+        assert!(r.allowed_users.is_empty());
+        assert!(!PlatformTrustConfig::env_trust_present("WECOM"));
+
+        // --- Scenario 2: config wins over env ---
+        std::env::set_var("WECOM_ALLOW_ALL_USERS", "true");
+        std::env::set_var("WECOM_ALLOWED_USERS", "mallory"); // ignored — config list wins
+        let cfg = PlatformTrustConfig {
+            allow_all_users: Some(false),
+            allowed_users: Some(vec!["zhangsan".into()]),
+        };
+        let r = cfg.resolve_with_env("WECOM");
+        assert!(!r.allow_all_users);
+        assert_eq!(r.allowed_users, vec!["zhangsan".to_string()]);
+
+        // --- Scenario 3: env fallback (comma-separated, trimmed, empties dropped) ---
+        std::env::set_var("WECOM_ALLOWED_USERS", " zhangsan , lisi,,wangwu ");
+        let r = PlatformTrustConfig::default().resolve_with_env("WECOM");
+        assert!(r.allow_all_users); // from WECOM_ALLOW_ALL_USERS=true
+        assert_eq!(
+            r.allowed_users,
+            vec![
+                "zhangsan".to_string(),
+                "lisi".to_string(),
+                "wangwu".to_string()
+            ]
+        );
+        assert!(PlatformTrustConfig::env_trust_present("WECOM"));
+
+        // --- Scenario 4: empty-string env flag treated as unset → deny-all ---
+        std::env::set_var("WECOM_ALLOW_ALL_USERS", "");
+        std::env::remove_var("WECOM_ALLOWED_USERS");
+        assert!(
+            !PlatformTrustConfig::default()
+                .resolve_with_env("WECOM")
+                .allow_all_users
+        );
+
+        // --- Scenario 5: "0"/"false" env values resolve false ---
+        std::env::set_var("WECOM_ALLOW_ALL_USERS", "0");
+        assert!(
+            !PlatformTrustConfig::default()
+                .resolve_with_env("WECOM")
+                .allow_all_users
+        );
+        std::env::set_var("WECOM_ALLOW_ALL_USERS", "false");
+        assert!(
+            !PlatformTrustConfig::default()
+                .resolve_with_env("WECOM")
+                .allow_all_users
+        );
+
+        // --- Scenario 6: explicit empty config list = deny-all, ignores env ---
+        std::env::set_var("WECOM_ALLOWED_USERS", "mallory");
+        let cfg = PlatformTrustConfig {
+            allow_all_users: None,
+            allowed_users: Some(vec![]),
+        };
+        assert!(cfg.resolve_with_env("WECOM").allowed_users.is_empty());
+
+        // --- Scenario 7: prefixes are independent — WECOM env must not bleed
+        //     into another prefix ---
+        assert!(!PlatformTrustConfig::env_trust_present("TEAMS"));
+        assert!(PlatformTrustConfig::default()
+            .resolve_with_env("TEAMS")
+            .allowed_users
+            .is_empty());
+
+        std::env::remove_var("WECOM_ALLOW_ALL_USERS");
+        std::env::remove_var("WECOM_ALLOWED_USERS");
     }
 
     #[test]

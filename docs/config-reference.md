@@ -137,7 +137,7 @@ Custom Gateway adapter for platforms like Telegram, LINE, Feishu/Lark, and Googl
 
 ## `[line]`
 
-First-class L3 identity trust for the LINE adapter (identity-trust-none ADR, Phase 1). Replaces the uniform `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` env vars for LINE — relying on those for LINE is deprecated and warns at startup. Channel credentials remain on the `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` env vars.
+First-class LINE section — credentials, connection, and L3 identity trust (config-first parity, #1376). Replaces the uniform `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` env vars for LINE trust — relying on those for LINE is deprecated and warns at startup.
 
 > **Mode scoping:** takes effect on the **embedded/unified adapter path** (see the note under `[wecom]` / `[googlechat]` / `[teams]` below — the same applies here).
 
@@ -145,6 +145,9 @@ Each field resolves: config value → `LINE_*` env var → default (deny-all).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `channel_secret` | string | — | Channel secret for webhook HMAC-SHA256 validation (L1). Env fallback: `LINE_CHANNEL_SECRET`. |
+| `channel_access_token` | string | — | Channel access token for the Reply/Push Message API and media downloads. Env fallback: `LINE_CHANNEL_ACCESS_TOKEN`. |
+| `webhook_path` | string | `/webhook/line` | Webhook mount path. Env fallback: `LINE_WEBHOOK_PATH`. |
 | `allow_all_users` | bool \| omit | `false` (deny-all) | `true` = any user may interact (bypasses `allowed_users` entirely); `false`/omitted = only `allowed_users`. Env fallback: `LINE_ALLOW_ALL_USERS`. |
 | `allowed_users` | string[] | `[]` | LINE user IDs (`U…`, 33 chars) allowed to interact. Only checked when `allow_all_users` resolves to false. Env fallback: `LINE_ALLOWED_USERS` (comma-separated). |
 

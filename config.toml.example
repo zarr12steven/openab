@@ -80,6 +80,9 @@ allowed_channels = ["1234567890"]       # ↑ omitted + non-empty list → auto-
 # NOTE: relying on GATEWAY_ALLOW_ALL_USERS / GATEWAY_ALLOWED_USERS for LINE is
 # deprecated (warns at startup; becomes an error in Phase 2).
 # [line]
+# channel_secret       = "${LINE_CHANNEL_SECRET}"        # L1 webhook HMAC key; env fallback: LINE_CHANNEL_SECRET
+# channel_access_token = "${LINE_CHANNEL_ACCESS_TOKEN}"  # Reply/Push API; env fallback: LINE_CHANNEL_ACCESS_TOKEN
+# webhook_path = "/webhook/line"        # env fallback: LINE_WEBHOOK_PATH (default /webhook/line)
 # allow_all_users = false               # true = any user; omitted/false = deny-all except allowed_users
 #                                       # env fallback: LINE_ALLOW_ALL_USERS
 # allowed_users = ["U1234567890abcdef0123456789abcdef"]  # LINE user IDs (U…, 33 chars)

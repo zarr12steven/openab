@@ -768,18 +768,22 @@ fn env_flag_not_false(key: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// First-class `[line]` section — L3 identity trust for the LINE adapter
-/// (identity-trust-none ADR, Phase 1). Mirrors [`TelegramConfig`]'s trust
-/// fields and resolution order: `[line].field` (with `${}` expansion) →
-/// `LINE_*` env var → default.
-///
-/// Trust-only by design: LINE channel credentials stay on the gateway env vars
-/// (`LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`) that the webhook
-/// adapter reads. Group policy (`open`/`members` for `"unknown"` senders) is a
-/// follow-up on #1355.
+/// First-class `[line]` section — credentials, connection, and L3 identity
+/// trust for the LINE adapter. Config-first invariant (#1375): each field
+/// resolves `[line].field` (with `${}` expansion) → `LINE_*` env var →
+/// default. Mirrors [`TelegramConfig`].
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct LineConfig {
+    /// Channel secret for webhook HMAC-SHA256 signature validation (L1).
+    /// Env fallback: `LINE_CHANNEL_SECRET`.
+    pub channel_secret: Option<String>,
+    /// Channel access token for the Reply/Push Message API and LINE-hosted
+    /// media downloads. Env fallback: `LINE_CHANNEL_ACCESS_TOKEN`.
+    pub channel_access_token: Option<String>,
+    /// Webhook mount path. Env fallback: `LINE_WEBHOOK_PATH`
+    /// (default `/webhook/line`).
+    pub webhook_path: Option<String>,
     /// Explicit flag: true = allow all users, false = check `allowed_users`.
     /// When not set, defaults to `false` (deny-all, per identity-trust-none ADR).
     /// Set `true` explicitly to allow all users. Env fallback:
@@ -795,16 +799,22 @@ pub struct LineConfig {
     pub allowed_users: Option<Vec<String>>,
 }
 
-/// Fully resolved LINE trust settings (config → env → default applied).
+/// Fully resolved LINE settings (config → env → default applied).
 #[derive(Debug, Clone)]
 pub struct ResolvedLine {
+    pub channel_secret: Option<String>,
+    pub channel_access_token: Option<String>,
+    pub webhook_path: String,
     pub allow_all_users: bool,
     pub allowed_users: Vec<String>,
 }
 
 impl LineConfig {
     /// Resolve every field: config value (if set) → `LINE_*` env → default.
-    /// Same shape as [`TelegramConfig::resolve`] for the shared trust fields.
+    /// Same shape as [`TelegramConfig::resolve`]. String fields filter out
+    /// empty strings produced by `${}` expansion of unset env vars, so
+    /// `channel_secret = "${UNSET}"` correctly falls through to the
+    /// `LINE_CHANNEL_SECRET` env fallback rather than holding `Some("")`.
     pub fn resolve(&self) -> ResolvedLine {
         let allowed_users: Vec<String> = match &self.allowed_users {
             Some(list) => list.clone(),
@@ -816,6 +826,25 @@ impl LineConfig {
                 .collect(),
         };
         ResolvedLine {
+            channel_secret: self
+                .channel_secret
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| std::env::var("LINE_CHANNEL_SECRET").ok()),
+            channel_access_token: self
+                .channel_access_token
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| std::env::var("LINE_CHANNEL_ACCESS_TOKEN").ok()),
+            webhook_path: self
+                .webhook_path
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| std::env::var("LINE_WEBHOOK_PATH").ok())
+                .unwrap_or_else(|| "/webhook/line".into()),
             allow_all_users: self.allow_all_users.unwrap_or_else(|| {
                 std::env::var("LINE_ALLOW_ALL_USERS")
                     .ok()
@@ -1981,11 +2010,17 @@ webhook_path = "/hook/tg"
 bot_token = "x"
 
 [line]
+channel_secret = "sec"
+channel_access_token = "tok"
+webhook_path = "/hook/line"
 allow_all_users = false
 allowed_users = ["U1234567890abcdef0123456789abcdef"]
 "#;
         let cfg = parse_config_str(toml_str, "test").unwrap();
         let line = cfg.line.expect("line section");
+        assert_eq!(line.channel_secret.as_deref(), Some("sec"));
+        assert_eq!(line.channel_access_token.as_deref(), Some("tok"));
+        assert_eq!(line.webhook_path.as_deref(), Some("/hook/line"));
         assert_eq!(line.allow_all_users, Some(false));
         assert_eq!(
             line.allowed_users.as_deref(),
@@ -2016,6 +2051,7 @@ allowed_users = ["U1234567890abcdef0123456789abcdef"]
         let cfg = LineConfig {
             allow_all_users: Some(false),
             allowed_users: Some(vec!["Uaaa".into(), "Ubbb".into()]),
+            ..Default::default()
         };
         let r = cfg.resolve();
         assert!(!r.allow_all_users);
@@ -2052,9 +2088,45 @@ allowed_users = ["U1234567890abcdef0123456789abcdef"]
         let cfg = LineConfig {
             allow_all_users: None,
             allowed_users: Some(vec![]),
+            ..Default::default()
         };
         let r = cfg.resolve();
         assert!(r.allowed_users.is_empty());
+
+        // --- Scenario 7 (#1376): credentials/path — config wins over env ---
+        std::env::set_var("LINE_CHANNEL_SECRET", "env-secret");
+        std::env::set_var("LINE_CHANNEL_ACCESS_TOKEN", "env-token");
+        std::env::set_var("LINE_WEBHOOK_PATH", "/hook/env");
+        let cfg = LineConfig {
+            channel_secret: Some("cfg-secret".into()),
+            channel_access_token: Some("cfg-token".into()),
+            webhook_path: Some("/hook/cfg".into()),
+            ..Default::default()
+        };
+        let r = cfg.resolve();
+        assert_eq!(r.channel_secret.as_deref(), Some("cfg-secret"));
+        assert_eq!(r.channel_access_token.as_deref(), Some("cfg-token"));
+        assert_eq!(r.webhook_path, "/hook/cfg");
+
+        // --- Scenario 8 (#1376): empty-string `${}` expansion falls through
+        //     to env; env fallback works when config unset ---
+        let cfg = LineConfig {
+            channel_secret: Some("".into()), // simulates ${UNSET_VAR} → ""
+            ..Default::default()
+        };
+        let r = cfg.resolve();
+        assert_eq!(r.channel_secret.as_deref(), Some("env-secret"));
+        assert_eq!(r.channel_access_token.as_deref(), Some("env-token"));
+        assert_eq!(r.webhook_path, "/hook/env");
+
+        // --- Scenario 9 (#1376): nothing set → defaults ---
+        std::env::remove_var("LINE_CHANNEL_SECRET");
+        std::env::remove_var("LINE_CHANNEL_ACCESS_TOKEN");
+        std::env::remove_var("LINE_WEBHOOK_PATH");
+        let r = LineConfig::default().resolve();
+        assert!(r.channel_secret.is_none());
+        assert!(r.channel_access_token.is_none());
+        assert_eq!(r.webhook_path, "/webhook/line");
 
         std::env::remove_var("LINE_ALLOW_ALL_USERS");
         std::env::remove_var("LINE_ALLOWED_USERS");

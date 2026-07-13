@@ -40,6 +40,9 @@ pub struct AppState {
     pub telegram_streaming: Option<bool>,
     pub line_channel_secret: Option<String>,
     pub line_access_token: Option<String>,
+    /// Webhook mount path for LINE (env: `LINE_WEBHOOK_PATH`; config-first via
+    /// `apply_line_config`, default `/webhook/line`).
+    pub line_webhook_path: String,
     #[cfg(feature = "teams")]
     pub teams: Option<adapters::teams::TeamsAdapter>,
     pub teams_service_urls: Mutex<HashMap<String, (String, Instant)>>,
@@ -76,6 +79,7 @@ impl AppState {
             telegram_streaming: None,
             line_channel_secret: None,
             line_access_token: None,
+            line_webhook_path: "/webhook/line".into(),
             #[cfg(feature = "teams")]
             teams: None,
             teams_service_urls: Mutex::new(HashMap::new()),
@@ -115,6 +119,8 @@ impl AppState {
         // LINE
         let line_channel_secret = std::env::var("LINE_CHANNEL_SECRET").ok();
         let line_access_token = std::env::var("LINE_CHANNEL_ACCESS_TOKEN").ok();
+        let line_webhook_path =
+            std::env::var("LINE_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/line".into());
 
         // Teams
         #[cfg(feature = "teams")]
@@ -182,6 +188,7 @@ impl AppState {
             telegram_streaming,
             line_channel_secret,
             line_access_token,
+            line_webhook_path,
             #[cfg(feature = "teams")]
             teams,
             teams_service_urls: Mutex::new(HashMap::new()),
@@ -310,6 +317,17 @@ impl AppState {
         self.telegram_trusted_source_only = cfg.trusted_source_only;
         self.telegram_streaming = cfg.streaming;
     }
+
+    /// Apply resolved `[line]` config values, overriding the env-derived
+    /// fields (#1376). Same crate-boundary pattern as
+    /// [`AppState::apply_telegram_config`]. Call before
+    /// [`AppState::warn_unenforceable_l1`] so a config-supplied
+    /// `channel_secret` is not falsely flagged as missing L1.
+    pub fn apply_line_config(&mut self, cfg: GatewayLineConfig) {
+        self.line_channel_secret = cfg.channel_secret;
+        self.line_access_token = cfg.channel_access_token;
+        self.line_webhook_path = cfg.webhook_path;
+    }
 }
 
 /// Parameter object for passing resolved Telegram config across the crate
@@ -321,6 +339,15 @@ pub struct GatewayTelegramConfig {
     pub rich_messages: bool,
     pub trusted_source_only: bool,
     pub streaming: Option<bool>,
+}
+
+/// Parameter object for passing resolved LINE config across the crate
+/// boundary without introducing a dependency on `openab-core` (#1376).
+#[derive(Debug, Clone)]
+pub struct GatewayLineConfig {
+    pub channel_secret: Option<String>,
+    pub channel_access_token: Option<String>,
+    pub webhook_path: String,
 }
 
 // --- Public serve() entry point ---
@@ -390,14 +417,19 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     #[cfg(feature = "line")]
     let line_access_token = std::env::var("LINE_CHANNEL_ACCESS_TOKEN").ok();
     #[cfg(feature = "line")]
+    let line_webhook_path =
+        std::env::var("LINE_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/line".into());
+    #[cfg(feature = "line")]
     {
-        info!("line adapter enabled");
-        app = app.route("/webhook/line", post(adapters::line::webhook));
+        info!(path = %line_webhook_path, "line adapter enabled");
+        app = app.route(&line_webhook_path, post(adapters::line::webhook));
     }
     #[cfg(not(feature = "line"))]
     let line_channel_secret: Option<String> = None;
     #[cfg(not(feature = "line"))]
     let line_access_token: Option<String> = None;
+    #[cfg(not(feature = "line"))]
+    let line_webhook_path = "/webhook/line".to_string();
 
     // Teams adapter
     #[cfg(feature = "teams")]
@@ -543,6 +575,7 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
             .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false"))),
         line_channel_secret,
         line_access_token,
+        line_webhook_path,
         #[cfg(feature = "teams")]
         teams,
         teams_service_urls: Mutex::new(HashMap::new()),
@@ -854,6 +887,27 @@ mod l1_audit_tests {
 
         // channel secret present → L1 enforced
         s.line_channel_secret = Some("csecret".into());
+        assert!(flagged(&s).is_empty());
+    }
+
+    #[test]
+    fn apply_line_config_overrides_env_state_and_feeds_l1_warning() {
+        use super::GatewayLineConfig;
+        let mut s = state();
+        // Simulate env-derived state: token from env, no secret → flagged.
+        s.line_access_token = Some("env-tok".into());
+        assert_eq!(flagged(&s), vec!["line"]);
+
+        // Config-first override (#1376): [line] supplies the secret + path.
+        s.apply_line_config(GatewayLineConfig {
+            channel_secret: Some("cfg-secret".into()),
+            channel_access_token: Some("cfg-tok".into()),
+            webhook_path: "/hook/line".into(),
+        });
+        assert_eq!(s.line_channel_secret.as_deref(), Some("cfg-secret"));
+        assert_eq!(s.line_access_token.as_deref(), Some("cfg-tok"));
+        assert_eq!(s.line_webhook_path, "/hook/line");
+        // Config-supplied secret satisfies the L1 startup check.
         assert!(flagged(&s).is_empty());
     }
 }

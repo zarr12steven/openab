@@ -867,6 +867,19 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
+
+            // First-class `[line]` config overrides env-derived values
+            // (config-authoritative + ${} expansion + LINE_* env fallback,
+            // #1376). Applied before warn_unenforceable_l1 so a
+            // config-supplied channel_secret is not falsely flagged.
+            if let Some(ref l) = cfg.line {
+                let r = l.resolve();
+                gw_state_inner.apply_line_config(openab_gateway::GatewayLineConfig {
+                    channel_secret: r.channel_secret,
+                    channel_access_token: r.channel_access_token,
+                    webhook_path: r.webhook_path,
+                });
+            }
             let gw_state = Arc::new(gw_state_inner);
 
             // Phase 1 L1 audit (#1356): warn if any active webhook platform has
@@ -896,9 +909,9 @@ async fn main() -> anyhow::Result<()> {
 
             #[cfg(feature = "line")]
             {
-                info!("unified: line adapter enabled");
+                info!(path = %gw_state.line_webhook_path, "unified: line adapter enabled");
                 app = app.route(
-                    "/webhook/line",
+                    &gw_state.line_webhook_path,
                     axum::routing::post(openab_gateway::adapters::line::webhook),
                 );
             }

@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           OWNER="${{ github.repository_owner }}"
-          REPO="${{ github.event.repository.name }}"
+          REPO="${GITHUB_REPOSITORY##*/}"
           CHART=charts/openab
           NAME=$(grep '^name:' ${CHART}/Chart.yaml | awk '{print $2}')
           VERSION=$(grep '^version:' ${CHART}/Chart.yaml | awk '{print $2}')
